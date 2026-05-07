@@ -400,6 +400,12 @@ function renderResults(query, filter, classId) {
     var empty = document.createElement('div');
     empty.style.cssText='text-align:center;padding:40px 20px;color:#9aa0a6;font-size:13px;';
     empty.innerHTML='<div style="font-size:36px;margin-bottom:10px">🔍</div>Try different keywords or synonyms.';
+    var deepSuggest = document.createElement('button');
+    deepSuggest.textContent = '📄 Try Deep Search (search inside PDFs)';
+    deepSuggest.style.cssText = 'margin-top:12px;padding:8px 18px;background:#ede9fe;color:#6d28d9;border:1.5px solid #6d28d9;border-radius:20px;font-size:12px;cursor:pointer;font-weight:600;';
+    deepSuggest.onclick = function() { panel.remove(); doDeepSearch(query); };
+    empty.appendChild(document.createElement('br'));
+    empty.appendChild(deepSuggest);
     panel.appendChild(empty);
   } else {
     results.forEach(function(r, i) {
@@ -441,7 +447,196 @@ function renderResults(query, filter, classId) {
   document.body.appendChild(panel);
 }
 
-// ─── DARK MODE — full page CSS invert (from new code) ─────────────────────────
+// ─── DEEP SEARCH (search inside PDFs & attachments) ──────────────────────────
+var deepSearchInProgress = false;
+
+function doDeepSearch(query) {
+  if (!query.trim()) return;
+  if (deepSearchInProgress) { showToast('Deep search already running...'); return; }
+  var classId = currentClassId;
+  if (!classId) { showToast('Open a class first'); return; }
+
+  deepSearchInProgress = true;
+  var dsBtn = document.getElementById('gcn-deep-search-btn');
+  if (dsBtn) { dsBtn.textContent = '⏳ Scanning...'; dsBtn.disabled = true; }
+
+  showToast('🔐 Requesting permission to read files...');
+
+  try {
+    chrome.runtime.sendMessage({
+      type: 'DEEP_SEARCH',
+      classId: classId,
+      query: query.trim()
+    }, function(res) {
+      deepSearchInProgress = false;
+      if (dsBtn) { dsBtn.textContent = '📄 Deep Search'; dsBtn.disabled = false; }
+
+      if (chrome.runtime.lastError) {
+        showToast('❌ Error: ' + chrome.runtime.lastError.message);
+        return;
+      }
+      if (!res) {
+        showToast('❌ No response from background');
+        return;
+      }
+      if (res.error) {
+        showToast('❌ ' + res.error);
+        return;
+      }
+
+      renderDeepSearchResults(query, classId, res);
+    });
+  } catch(e) {
+    deepSearchInProgress = false;
+    if (dsBtn) { dsBtn.textContent = '📄 Deep Search'; dsBtn.disabled = false; }
+    showToast('❌ ' + e.message);
+  }
+}
+
+function renderDeepSearchResults(query, classId, response) {
+  var results = response.results || [];
+  var totalFiles = response.totalFiles || 0;
+  var debugLog = response.debug || [];
+
+  // Always log debug info to page console
+  if (debugLog.length > 0) {
+    console.log('%c[GC Deep Search Debug]', 'color:#6d28d9;font-weight:bold;');
+    debugLog.forEach(function(line) { console.log('  ' + line); });
+  }
+
+  var old = document.getElementById('gcn-api-results'); if (old) old.remove();
+  var panel = document.createElement('div');
+  panel.id = 'gcn-api-results';
+  panel.setAttribute('data-class-id', classId);
+  panel.style.cssText = 'position:fixed;top:56px;left:50%;transform:translateX(-50%);width:620px;max-width:95vw;max-height:80vh;overflow-y:auto;background:#fff;border-radius:12px;box-shadow:0 4px 24px rgba(0,0,0,0.2);z-index:99999;font-family:sans-serif;';
+
+  // Info bar
+  var info = document.createElement('div');
+  info.style.cssText = 'background:#ede9fe;color:#6d28d9;font-size:11px;padding:6px 18px;border-bottom:1px solid #ddd6fe;display:flex;align-items:center;gap:8px;border-radius:12px 12px 0 0;';
+  info.innerHTML = '<span style="font-size:14px;">📄</span> Deep Search — scanned <b>' + totalFiles + '</b> file(s) for "<b>' + query.replace(/</g,'&lt;') + '</b>"';
+  panel.appendChild(info);
+
+  // Header
+  var header = document.createElement('div');
+  header.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:14px 18px;border-bottom:1px solid #f1f3f4;position:sticky;top:0;background:#fff;z-index:1;';
+  var htitle = document.createElement('span');
+  htitle.textContent = results.length > 0
+    ? '📄 ' + results.length + ' match(es) found inside files'
+    : '📄 No matches found inside files';
+  htitle.style.cssText = 'font-size:14px;font-weight:600;color:#202124;';
+  var closeBtn = document.createElement('button');
+  closeBtn.textContent = '✕';
+  closeBtn.style.cssText = 'background:#f1f3f4;border:none;border-radius:50%;width:28px;height:28px;cursor:pointer;font-size:13px;color:#5f6368;';
+  closeBtn.onclick = function() { panel.remove(); };
+  header.appendChild(htitle); header.appendChild(closeBtn);
+  panel.appendChild(header);
+
+  if (results.length === 0) {
+    var empty = document.createElement('div');
+    empty.style.cssText = 'text-align:center;padding:40px 20px;color:#9aa0a6;font-size:13px;';
+    empty.innerHTML = '<div style="font-size:36px;margin-bottom:10px">📄</div>' +
+      (response.message || 'No matches found.') + '<br>' +
+      '<span style="font-size:11px;color:#bdc1c6;">Searched PDFs, Docs, Slides attached to stream posts & assignments.</span>';
+    if (debugLog.length > 0) {
+      var debugEl = document.createElement('div');
+      debugEl.style.cssText = 'margin-top:12px;padding:8px;background:#f3f4f6;border-radius:6px;text-align:left;font-size:10px;color:#6b7280;font-family:monospace;max-height:160px;overflow-y:auto;word-break:break-all;';
+      debugEl.innerHTML = '<b>Debug log:</b><br>' + debugLog.map(function(l){ return l.replace(/</g,'&lt;'); }).join('<br>');
+      empty.appendChild(debugEl);
+    }
+    panel.appendChild(empty);
+  } else {
+    results.forEach(function(r, i) {
+      var item = document.createElement('div');
+      item.style.cssText = 'padding:14px 18px;border-bottom:1px solid #f1f3f4;background:#faf5ff;transition:background 0.15s;';
+      item.onmouseover = function() { item.style.background = '#f3e8ff'; };
+      item.onmouseout  = function() { item.style.background = '#faf5ff'; };
+
+      // Top row: badges
+      var topRow = document.createElement('div');
+      topRow.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:6px;';
+      var typeBadge = document.createElement('span');
+      typeBadge.textContent = r.postType === 'stream' ? '💬 Stream' : r.postType === 'material' ? '📚 Material' : '📝 Classwork';
+      typeBadge.style.cssText = 'font-size:10px;padding:2px 8px;border-radius:8px;font-weight:600;' +
+        (r.postType === 'stream' ? 'background:#e8f0fe;color:#1a73e8;' : r.postType === 'material' ? 'background:#e8f5e9;color:#2e7d32;' : 'background:#fef7e0;color:#f29900;');
+      var deepBadge = document.createElement('span');
+      deepBadge.textContent = '📄 PDF match';
+      deepBadge.style.cssText = 'font-size:10px;padding:2px 8px;border-radius:8px;font-weight:600;background:#ede9fe;color:#6d28d9;';
+      var num = document.createElement('span');
+      num.textContent = '#' + (i + 1);
+      num.style.cssText = 'font-size:11px;color:#bdc1c6;';
+      topRow.appendChild(typeBadge);
+      topRow.appendChild(deepBadge);
+      topRow.appendChild(num);
+
+      // File name
+      var fileNameEl = document.createElement('div');
+      fileNameEl.textContent = '📎 ' + r.fileName;
+      fileNameEl.style.cssText = 'font-size:13px;font-weight:600;color:#202124;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+      fileNameEl.title = r.fileName;
+
+      // Post title
+      var postTitleEl = document.createElement('div');
+      postTitleEl.textContent = 'From: ' + (r.postTitle || 'Unknown post');
+      postTitleEl.style.cssText = 'font-size:11px;color:#9aa0a6;margin-bottom:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+
+      // Snippet
+      var snippetEl = document.createElement('div');
+      snippetEl.style.cssText = 'font-size:12px;color:#5f6368;line-height:1.6;margin-bottom:8px;word-break:break-word;background:#fff;padding:8px 12px;border-radius:8px;border:1px solid #e9d5ff;';
+      snippetEl.innerHTML = highlightDeepSnippet(r.snippet || '', query);
+
+      // Bottom row: date + buttons
+      var bottomRow = document.createElement('div');
+      bottomRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;';
+      var dt = document.createElement('span');
+      dt.textContent = r.postDate ? '🗓 ' + r.postDate : '';
+      dt.style.cssText = 'font-size:11px;color:#9aa0a6;';
+      var btnGrp = document.createElement('div');
+      btnGrp.style.cssText = 'display:flex;gap:6px;';
+
+      var openFileBtn = document.createElement('button');
+      openFileBtn.textContent = '📄 Open File';
+      openFileBtn.style.cssText = 'font-size:11px;background:#ede9fe;color:#6d28d9;border:1px solid #6d28d9;padding:3px 12px;border-radius:8px;cursor:pointer;font-weight:600;';
+      openFileBtn.onclick = function(e) { e.stopPropagation(); window.open(r.fileUrl, '_blank'); };
+
+      if (r.postUrl) {
+        var goPostBtn = document.createElement('button');
+        goPostBtn.textContent = '↗ Go to post';
+        goPostBtn.style.cssText = 'font-size:11px;color:#fff;background:#1a73e8;border:none;padding:3px 12px;border-radius:8px;cursor:pointer;font-weight:600;';
+        goPostBtn.onclick = function(e) { e.stopPropagation(); window.open(fixUrl(r.postUrl), '_blank'); };
+        btnGrp.appendChild(goPostBtn);
+      }
+      btnGrp.appendChild(openFileBtn);
+      bottomRow.appendChild(dt);
+      bottomRow.appendChild(btnGrp);
+
+      item.appendChild(topRow);
+      item.appendChild(fileNameEl);
+      item.appendChild(postTitleEl);
+      item.appendChild(snippetEl);
+      item.appendChild(bottomRow);
+      panel.appendChild(item);
+    });
+  }
+
+  // Footer
+  var footer = document.createElement('div');
+  footer.style.cssText = 'padding:12px 18px;border-top:1px solid #f1f3f4;text-align:center;';
+  footer.innerHTML = '<span style="font-size:11px;color:#9aa0a6;">Deep Search scanned ' + totalFiles + ' attached file(s) via Google Classroom & Drive APIs</span>';
+  panel.appendChild(footer);
+
+  document.body.appendChild(panel);
+}
+
+function highlightDeepSnippet(snippet, query) {
+  if (!snippet) return '';
+  var safe = snippet.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  var words = query.toLowerCase().trim().split(/\s+/).filter(function(w){ return w.length >= 2; });
+  words.forEach(function(w) {
+    var re = new RegExp('(' + w.replace(/[.*+?^${}()|[\]\\]/g,'\\$&') + ')', 'gi');
+    safe = safe.replace(re, '<mark style="background:#ddd6fe;color:#4c1d95;border-radius:2px;padding:0 2px;">$1</mark>');
+  });
+  return safe;
+}
 var gcnDark = false;
 
 function initDarkMode() {
@@ -478,6 +673,7 @@ function applyDarkMode() {
     '#gcn-filter       { background:#111 !important; color:#fff !important; border:1px solid #444 !important; }',
     '#gcn-clear-btn    { background:#222 !important; color:#ccc !important; }',
     'button.gcn-bm-btn { background:#111 !important; color:#fff !important; border:1px solid #444 !important; }',
+    '#gcn-deep-search-btn { background:#2d1b69 !important; color:#c4b5fd !important; border:1px solid #6d28d9 !important; }',
   ].join('\n') : '';
 
   var toggle = document.getElementById('gcn-dark-toggle');
@@ -539,6 +735,22 @@ function injectSearchBar() {
     if(e.key==='Escape'){var o=document.getElementById('gcn-api-results');if(o)o.remove();}
   };
   bar.appendChild(inp); bar.appendChild(sel); bar.appendChild(clr);
+
+  // Deep Search button
+  var dsBtn = document.createElement('button');
+  dsBtn.id = 'gcn-deep-search-btn';
+  dsBtn.textContent = '📄 Deep Search';
+  dsBtn.title = 'Search inside PDFs & attachments (requires permission)';
+  dsBtn.style.cssText = 'padding:5px 12px;background:#ede9fe;color:#6d28d9;border:1px solid #6d28d9;border-radius:18px;font-size:12px;cursor:pointer;font-weight:600;white-space:nowrap;transition:background 0.15s;';
+  dsBtn.onmouseover = function() { dsBtn.style.background = '#ddd6fe'; };
+  dsBtn.onmouseout  = function() { dsBtn.style.background = '#ede9fe'; };
+  dsBtn.onclick = function() {
+    var q = inp.value.trim();
+    if (!q) { showToast('Type a search query first'); inp.focus(); return; }
+    doDeepSearch(q);
+  };
+  bar.appendChild(dsBtn);
+
   var group=document.getElementById('gcn-nav-group');
   if(group){group.appendChild(bar);}else{document.body.appendChild(bar);}
 }
