@@ -1,6 +1,10 @@
 // // // background.js — GC AI Bookmark & Search
 // // // Handles bookmarks + silent background pre-fetch of ALL classes via Classroom API
 
+// Load pdf.js at top level — but note: pdf.js doesn't work in MV3 service workers
+// We use a custom PDF parser with DecompressionStream instead
+// try { importScripts('pdf.min.js'); } catch(e) {}
+
 // // chrome.runtime.onInstalled.addListener(function() {
 // //   console.log("GC AI Bookmark & Search installed");
 // //   // Kick off a pre-fetch shortly after install
@@ -741,9 +745,9 @@ function runDeepSearch(token, courseId, query, debugLog) {
       };
     }
 
-    // Extract text from each file
+    // Extract text from each file — only process first 5 to show debug, then rest
     var extractPromises = fileTasks.map(function(ft) {
-      return extractFileText(token, ft.fileId, ft.mimeType).then(function(text) {
+      return extractFileText(token, ft.fileId, ft.mimeType, debugLog).then(function(text) {
         ft.extractedText = text || '';
         debugLog.push('Extracted ' + ft.extractedText.length + ' chars from ' + ft.fileName);
         return ft;
@@ -935,11 +939,7 @@ function fetchCourseWorkMaterials(token, courseId) {
 }
 
 // Extract text from a Google Drive file.
-// Strategy:
-//   Google Docs/Slides/Sheets → export as plain text
-//   PDFs → copy as Google Doc via Drive API (Drive does OCR), then export as text, then delete the copy
-//   Text files → download directly
-function extractFileText(token, fileId, mimeType) {
+function extractFileText(token, fileId, mimeType, debugLog) {
   // Google Docs, Slides, Sheets → export as text
   if (mimeType === 'application/vnd.google-apps.document' ||
       mimeType === 'application/vnd.google-apps.presentation' ||
@@ -947,180 +947,281 @@ function extractFileText(token, fileId, mimeType) {
     var exportUrl = 'https://www.googleapis.com/drive/v3/files/' + fileId + '/export?mimeType=text/plain';
     return fetch(exportUrl, { headers: { 'Authorization': 'Bearer ' + token } })
       .then(function(r) {
-        if (!r.ok) { console.log('GC Deep: export failed for', fileId, r.status); return ''; }
+        if (!r.ok) { debugLog.push('EXPORT FAIL ' + fileId + ' HTTP ' + r.status); return ''; }
         return r.text();
       })
       .then(function(text) { return (text || '').substring(0, 50000); })
-      .catch(function(e) { console.log('GC Deep: export error', fileId, e); return ''; });
+      .catch(function(e) { debugLog.push('EXPORT ERR ' + fileId + ': ' + e.message); return ''; });
   }
 
   // For non-native files: check metadata first
   var metaUrl = 'https://www.googleapis.com/drive/v3/files/' + fileId + '?fields=mimeType,size,name';
   return fetch(metaUrl, { headers: { 'Authorization': 'Bearer ' + token } })
-    .then(function(r) { return r.json(); })
+    .then(function(r) {
+      if (!r.ok) {
+        debugLog.push('META FAIL ' + fileId + ' HTTP ' + r.status);
+        return r.text().then(function(body) {
+          debugLog.push('META BODY: ' + body.substring(0, 200));
+          return null;
+        });
+      }
+      return r.json();
+    })
     .then(function(meta) {
+      if (!meta) return '';
       var actualMime = meta.mimeType || mimeType || '';
-      console.log('GC Deep: file', fileId, meta.name, actualMime, 'size:', meta.size);
+      debugLog.push('FILE ' + (meta.name || fileId) + ' mime=' + actualMime + ' size=' + (meta.size || '?'));
 
-      // Google-native types we missed above
+      // Google-native types
       if (actualMime.startsWith('application/vnd.google-apps.')) {
         var expUrl = 'https://www.googleapis.com/drive/v3/files/' + fileId + '/export?mimeType=text/plain';
         return fetch(expUrl, { headers: { 'Authorization': 'Bearer ' + token } })
-          .then(function(r) { return r.ok ? r.text() : ''; })
+          .then(function(r) {
+            if (!r.ok) { debugLog.push('GEXPORT FAIL ' + fileId + ' HTTP ' + r.status); return ''; }
+            return r.text();
+          })
           .then(function(t) { return (t || '').substring(0, 50000); });
       }
 
-      // For PDFs: Use Google Drive's "copy as Google Doc" trick
-      // This leverages Google's server-side OCR/text extraction
-      if (actualMime === 'application/pdf') {
-        return extractPdfViaGoogleDoc(token, fileId, meta.name || 'file');
-      }
-
-      // Skip files > 10MB
+      // Skip files > 15MB
       var fileSize = parseInt(meta.size || '0', 10);
-      if (fileSize > 10 * 1024 * 1024) return '';
-
-      // For text-like files: download directly
-      if (actualMime.startsWith('text/') ||
-          actualMime === 'application/json' ||
-          actualMime === 'application/xml' ||
-          actualMime === 'application/csv') {
-        var dlUrl = 'https://www.googleapis.com/drive/v3/files/' + fileId + '?alt=media';
-        return fetch(dlUrl, { headers: { 'Authorization': 'Bearer ' + token } })
-          .then(function(r) { return r.ok ? r.text() : ''; })
-          .then(function(t) { return (t || '').substring(0, 50000); });
+      if (fileSize > 15 * 1024 * 1024) {
+        debugLog.push('SKIP too large: ' + fileSize);
+        return '';
       }
 
-      return '';
+      // Download the raw file
+      var dlUrl = 'https://www.googleapis.com/drive/v3/files/' + fileId + '?alt=media';
+      return fetch(dlUrl, { headers: { 'Authorization': 'Bearer ' + token } })
+        .then(function(r) {
+          if (!r.ok) {
+            debugLog.push('DOWNLOAD FAIL ' + fileId + ' HTTP ' + r.status);
+            return r.text().then(function(body) {
+              debugLog.push('DL BODY: ' + body.substring(0, 200));
+              return '';
+            });
+          }
+          debugLog.push('DOWNLOAD OK ' + (meta.name || fileId));
+
+          // For PDFs: extract with pdf.js
+          if (actualMime === 'application/pdf') {
+            return r.arrayBuffer().then(function(buf) {
+              debugLog.push('PDF buffer size: ' + buf.byteLength + ' bytes');
+              return extractTextWithPdfJs(buf, debugLog);
+            });
+          }
+
+          // For text-like files
+          if (actualMime.startsWith('text/') ||
+              actualMime === 'application/json' ||
+              actualMime === 'application/xml' ||
+              actualMime === 'application/csv') {
+            return r.text();
+          }
+
+          return '';
+        })
+        .then(function(t) { return (t || '').substring(0, 50000); });
     })
-    .catch(function(e) { console.log('GC Deep: metadata error', fileId, e); return ''; });
+    .catch(function(e) { debugLog.push('EXTRACT ERR ' + fileId + ': ' + (e.message || e)); return ''; });
 }
 
-// Convert PDF to Google Doc (server-side), export as text, then delete the temp doc.
-// This is the most reliable way to extract text from PDFs in a service worker
-// because Google does the heavy lifting (handles compressed streams, fonts, OCR, etc.)
-function extractPdfViaGoogleDoc(token, fileId, fileName) {
-  // Step 1: Copy the PDF as a Google Doc
-  var copyUrl = 'https://www.googleapis.com/drive/v3/files/' + fileId + '/copy';
-  return fetch(copyUrl, {
-    method: 'POST',
-    headers: {
-      'Authorization': 'Bearer ' + token,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      name: '_gcn_temp_' + fileName,
-      mimeType: 'application/vnd.google-apps.document'
-    })
-  })
-  .then(function(r) {
-    if (!r.ok) {
-      console.log('GC Deep: copy-as-doc failed', fileId, r.status);
-      // Fallback: try raw download + basic extraction
-      return { fallback: true };
-    }
-    return r.json();
-  })
-  .then(function(copyData) {
-    if (copyData.fallback) {
-      return extractPdfRawFallback(token, fileId);
-    }
+// ─── Custom PDF Text Extractor using DecompressionStream API ───────────────
+// Works in service workers (no document needed). Handles FlateDecode streams.
 
-    var tempDocId = copyData.id;
-    if (!tempDocId) {
-      console.log('GC Deep: no doc ID from copy', copyData);
-      return extractPdfRawFallback(token, fileId);
-    }
-
-    // Step 2: Export the Google Doc as plain text
-    var expUrl = 'https://www.googleapis.com/drive/v3/files/' + tempDocId + '/export?mimeType=text/plain';
-    return fetch(expUrl, { headers: { 'Authorization': 'Bearer ' + token } })
-      .then(function(r) { return r.ok ? r.text() : ''; })
-      .then(function(text) {
-        // Step 3: Delete the temp doc (fire and forget)
-        fetch('https://www.googleapis.com/drive/v3/files/' + tempDocId, {
-          method: 'DELETE',
-          headers: { 'Authorization': 'Bearer ' + token }
-        }).catch(function() {}); // ignore delete errors
-
-        console.log('GC Deep: extracted', (text || '').length, 'chars from PDF', fileId);
-        return (text || '').substring(0, 50000);
-      });
-  })
-  .catch(function(e) {
-    console.log('GC Deep: PDF extraction error', fileId, e);
-    return extractPdfRawFallback(token, fileId);
-  });
+function extractTextWithPdfJs(arrayBuffer, debugLog) {
+  return extractPdfText(arrayBuffer, debugLog);
 }
 
-// Fallback: download raw PDF bytes and do basic text extraction
-// Works for PDFs with uncompressed text streams
-function extractPdfRawFallback(token, fileId) {
-  var dlUrl = 'https://www.googleapis.com/drive/v3/files/' + fileId + '?alt=media';
-  return fetch(dlUrl, { headers: { 'Authorization': 'Bearer ' + token } })
-    .then(function(r) {
-      if (!r.ok) return '';
-      return r.arrayBuffer();
-    })
-    .then(function(buf) {
-      if (!buf) return '';
-      return extractTextFromPdfBuffer(buf);
-    })
-    .catch(function() { return ''; });
-}
-
-// Basic PDF text extractor — reads stream objects and pulls out text between BT/ET blocks.
-// Only works for uncompressed text streams (fallback if Google Doc conversion fails).
-function extractTextFromPdfBuffer(buffer) {
+async function extractPdfText(arrayBuffer, debugLog) {
   try {
-    var bytes = new Uint8Array(buffer);
-    var text = '';
-    var limit = Math.min(bytes.length, 5 * 1024 * 1024);
-    var raw = '';
-    var chunkSize = 65536;
-    for (var offset = 0; offset < limit; offset += chunkSize) {
-      var end = Math.min(offset + chunkSize, limit);
-      var chunk = bytes.subarray(offset, end);
-      for (var i = 0; i < chunk.length; i++) {
-        raw += String.fromCharCode(chunk[i]);
+    var bytes = new Uint8Array(arrayBuffer);
+    var allText = '';
+
+    // Find all stream objects and decompress FlateDecode streams
+    var streamRegex = /stream\r?\n/g;
+    var endStreamRegex = /\r?\nendstream/g;
+    var raw = bytesToLatin1(bytes);
+
+    // Find all FlateDecode streams
+    var streamCount = 0;
+    var decompressedCount = 0;
+    var match;
+    
+    // Collect stream positions
+    var streams = [];
+    streamRegex.lastIndex = 0;
+    while ((match = streamRegex.exec(raw)) !== null) {
+      var streamStart = match.index + match[0].length;
+      // Find the matching endstream
+      endStreamRegex.lastIndex = streamStart;
+      var endMatch = endStreamRegex.exec(raw);
+      if (endMatch) {
+        streams.push({ start: streamStart, end: endMatch.index });
+        streamCount++;
       }
     }
 
-    // Method 1: Extract text from parenthesized strings in BT..ET blocks
-    var btMatches = raw.match(/BT[\s\S]*?ET/g) || [];
-    btMatches.forEach(function(block) {
-      var textParts = block.match(/\(([^)]*)\)/g) || [];
-      textParts.forEach(function(part) {
-        var inner = part.substring(1, part.length - 1);
-        inner = inner.replace(/\\n/g, '\n').replace(/\\r/g, '\r')
-                     .replace(/\\t/g, '\t').replace(/\\\(/g, '(')
-                     .replace(/\\\)/g, ')').replace(/\\\\/g, '\\');
-        text += inner + ' ';
-      });
-      text += '\n';
-    });
+    debugLog.push('Found ' + streamCount + ' streams in PDF');
 
-    // Method 2: If BT/ET extraction got very little, try raw string extraction
-    if (text.trim().length < 50) {
-      var altParts = raw.match(/\(([^)]{2,})\)/g) || [];
-      var altText = '';
-      altParts.forEach(function(part) {
-        var inner = part.substring(1, part.length - 1);
-        if (/^[\x20-\x7E\s]{2,}$/.test(inner)) {
-          altText += inner + ' ';
+    // Look back from each stream to check if it uses FlateDecode
+    for (var s = 0; s < streams.length; s++) {
+      var st = streams[s];
+      // Look at the object header before this stream (up to 500 chars back)
+      var headerStart = Math.max(0, st.start - 500);
+      var header = raw.substring(headerStart, st.start);
+      
+      var streamBytes = bytes.slice(st.start, st.end);
+      var text = '';
+
+      if (header.indexOf('/FlateDecode') !== -1) {
+        // Decompress with DecompressionStream API
+        try {
+          var decompressed = await decompressFlate(streamBytes);
+          text = extractTextFromContent(decompressed);
+          if (text.length > 0) decompressedCount++;
+        } catch(e) {
+          // Not all FlateDecode streams contain text, skip silently
         }
-      });
-      if (altText.trim().length > text.trim().length) {
-        text = altText;
+      } else {
+        // Uncompressed stream — try direct text extraction
+        text = extractTextFromContent(bytesToLatin1Bytes(streamBytes));
+      }
+
+      if (text.trim().length > 0) {
+        allText += text + '\n';
       }
     }
 
-    text = text.replace(/\s+/g, ' ').trim();
-    console.log('GC Deep: raw fallback extracted', text.length, 'chars');
-    return text;
+    debugLog.push('Decompressed ' + decompressedCount + ' streams, extracted ' + allText.length + ' chars');
+    return allText.trim();
   } catch(e) {
+    debugLog.push('PDF parse error: ' + (e.message || e));
     return '';
   }
+}
+
+// Decompress a FlateDecode (zlib/deflate) stream using DecompressionStream API
+async function decompressFlate(compressedBytes) {
+  // FlateDecode in PDF is raw deflate (RFC 1951), but sometimes zlib-wrapped
+  // Try raw deflate first, then zlib
+  for (var format of ['deflate-raw', 'deflate']) {
+    try {
+      var ds = new DecompressionStream(format);
+      var writer = ds.writable.getWriter();
+      var reader = ds.readable.getReader();
+      
+      writer.write(compressedBytes);
+      writer.close();
+      
+      var chunks = [];
+      while (true) {
+        var result = await reader.read();
+        if (result.done) break;
+        chunks.push(result.value);
+      }
+      
+      // Concatenate chunks
+      var totalLen = 0;
+      for (var c = 0; c < chunks.length; c++) totalLen += chunks[c].length;
+      var out = new Uint8Array(totalLen);
+      var offset = 0;
+      for (var c2 = 0; c2 < chunks.length; c2++) {
+        out.set(chunks[c2], offset);
+        offset += chunks[c2].length;
+      }
+      
+      return bytesToLatin1Bytes(out);
+    } catch(e) {
+      // Try next format
+    }
+  }
+  throw new Error('Decompression failed');
+}
+
+// Extract readable text from a PDF content stream (BT/ET blocks, Tj/TJ operators)
+function extractTextFromContent(content) {
+  var text = '';
+  
+  // Method 1: Extract from BT...ET blocks
+  var btBlocks = content.match(/BT[\s\S]*?ET/g) || [];
+  for (var b = 0; b < btBlocks.length; b++) {
+    var block = btBlocks[b];
+    
+    // Handle TJ operator: [(text) kerning (text) ...] TJ
+    var tjArrays = block.match(/\[([^\]]*)\]\s*TJ/g) || [];
+    for (var t = 0; t < tjArrays.length; t++) {
+      var parts = tjArrays[t].match(/\(([^)]*)\)/g) || [];
+      for (var p = 0; p < parts.length; p++) {
+        text += unescapePdfString(parts[p].substring(1, parts[p].length - 1));
+      }
+    }
+    
+    // Handle Tj operator: (text) Tj
+    var tjSingle = block.match(/\(([^)]*)\)\s*Tj/g) || [];
+    for (var ts = 0; ts < tjSingle.length; ts++) {
+      var innerMatch = tjSingle[ts].match(/\(([^)]*)\)/);
+      if (innerMatch) {
+        text += unescapePdfString(innerMatch[1]);
+      }
+    }
+    
+    // Handle ' and " operators (text with line break)
+    var tjQuote = block.match(/\(([^)]*)\)\s*['"]/g) || [];
+    for (var tq = 0; tq < tjQuote.length; tq++) {
+      var qMatch = tjQuote[tq].match(/\(([^)]*)\)/);
+      if (qMatch) {
+        text += unescapePdfString(qMatch[1]) + '\n';
+      }
+    }
+    
+    text += ' ';
+  }
+  
+  // Method 2: If BT/ET got nothing, try raw parenthesized string extraction
+  if (text.trim().length < 5) {
+    var rawStrings = content.match(/\(([^)]{2,})\)/g) || [];
+    var rawText = '';
+    for (var r = 0; r < rawStrings.length; r++) {
+      var inner = rawStrings[r].substring(1, rawStrings[r].length - 1);
+      // Only keep strings that look like readable text
+      if (/^[\x20-\x7E\u00A0-\u00FF\s]{2,}$/.test(inner)) {
+        rawText += inner + ' ';
+      }
+    }
+    if (rawText.length > text.length) text = rawText;
+  }
+  
+  return text;
+}
+
+function unescapePdfString(s) {
+  return s
+    .replace(/\\n/g, '\n')
+    .replace(/\\r/g, '\r')
+    .replace(/\\t/g, '\t')
+    .replace(/\\\(/g, '(')
+    .replace(/\\\)/g, ')')
+    .replace(/\\\\/g, '\\')
+    .replace(/\\(\d{1,3})/g, function(m, oct) {
+      return String.fromCharCode(parseInt(oct, 8));
+    });
+}
+
+// Convert Uint8Array to a string using Latin-1 (preserves byte values)
+function bytesToLatin1(bytes) {
+  var result = '';
+  var chunk = 65536;
+  for (var i = 0; i < bytes.length; i += chunk) {
+    var end = Math.min(i + chunk, bytes.length);
+    var slice = bytes.subarray(i, end);
+    result += String.fromCharCode.apply(null, slice);
+  }
+  return result;
+}
+
+function bytesToLatin1Bytes(bytes) {
+  return bytesToLatin1(bytes);
 }
 
 function fetchPaged(url, token, field, maxPages) {
