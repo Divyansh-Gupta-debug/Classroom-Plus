@@ -1003,11 +1003,11 @@ function extractFileText(token, fileId, mimeType, debugLog) {
           }
           debugLog.push('DOWNLOAD OK ' + (meta.name || fileId));
 
-          // For PDFs: extract with pdf.js
+          // For PDFs: extract text
           if (actualMime === 'application/pdf') {
-            return r.arrayBuffer().then(function(buf) {
+            return r.arrayBuffer().then(async function(buf) {
               debugLog.push('PDF buffer size: ' + buf.byteLength + ' bytes');
-              return extractTextWithPdfJs(buf, debugLog);
+              return await extractTextWithPdfJs(buf, debugLog);
             });
           }
 
@@ -1209,15 +1209,20 @@ function unescapePdfString(s) {
 }
 
 // Convert Uint8Array to a string using Latin-1 (preserves byte values)
+// Uses TextDecoder for performance
 function bytesToLatin1(bytes) {
-  var result = '';
-  var chunk = 65536;
-  for (var i = 0; i < bytes.length; i += chunk) {
-    var end = Math.min(i + chunk, bytes.length);
-    var slice = bytes.subarray(i, end);
-    result += String.fromCharCode.apply(null, slice);
+  try {
+    // TextDecoder with latin1/iso-8859-1 is fastest and preserves byte values
+    var decoder = new TextDecoder('iso-8859-1');
+    return decoder.decode(bytes);
+  } catch(e) {
+    // Fallback: manual conversion with small chunks
+    var result = '';
+    for (var i = 0; i < bytes.length; i++) {
+      result += String.fromCharCode(bytes[i]);
+    }
+    return result;
   }
-  return result;
 }
 
 function bytesToLatin1Bytes(bytes) {
