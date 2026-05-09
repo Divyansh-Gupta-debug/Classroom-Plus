@@ -812,24 +812,7 @@ function buildResultItem(r, i, query, classId, panel, isSmartResult) {
   goBtn.style.cssText = 'font-size:11px;color:#fff;background:#1a73e8;border:none;padding:3px 12px;border-radius:8px;cursor:pointer;font-weight:600;';
   goBtn.onclick = function(e) {
     e.stopPropagation(); panel.remove();
-    if (r.element && document.contains(r.element)) {
-      r.element.style.outline='3px solid #1a73e8'; r.element.style.boxShadow='0 0 0 5px rgba(26,115,232,0.3)';
-      r.element.scrollIntoView({behavior:'smooth',block:'center'});
-      highlightKeywordInElement(r.element, query);
-      setTimeout(function(){ r.element.style.outline=''; r.element.style.boxShadow=''; }, 5000);
-    } else {
-      // Try to find element by text first
-      var el = findElementByText(r.text || r.title || '');
-      if (el) {
-        el.style.outline='3px solid #1a73e8'; el.style.boxShadow='0 0 0 5px rgba(26,115,232,0.3)';
-        el.scrollIntoView({behavior:'smooth',block:'center'});
-        highlightKeywordInElement(el, query);
-        setTimeout(function(){ el.style.outline=''; el.style.boxShadow=''; }, 5000);
-      } else {
-        // Post not visible — open it in new tab
-        window.open(fixUrl(r.url), '_blank');
-      }
-    }
+    window.open(fixUrl(r.url), '_blank');
   };
   grp.appendChild(bmBtn); grp.appendChild(goBtn);
   bottomRow.appendChild(dt); bottomRow.appendChild(grp);
@@ -1383,12 +1366,23 @@ function openBookmarkDropdown(classId,anchorBtn) {
 
 function scrollUntilFound(targetUrl,fullText){
   var scroller=getStreamScroller(); var ticks=0; var fakeB={url:targetUrl,fullText:fullText||''};
+  var userTop=scroller.scrollTop;
   var iv=setInterval(function(){
     ticks++;
     var el=findElementInDom(fakeB);
     if(el){clearInterval(iv);highlightAndScroll(el);return;}
     scroller=getStreamScroller(); scroller.scrollTop=scroller.scrollHeight+99999;
-    if(ticks>=150)clearInterval(iv);
+    // After scrolling enough, scroll back to user position and try URL as fallback
+    if(ticks>=100){
+      clearInterval(iv);
+      scroller.scrollTop=userTop;
+      if(targetUrl&&targetUrl.includes('/c/')){
+        window.open(fixUrl(targetUrl),'_blank');
+        showToast('📌 Post opened in new tab');
+      } else {
+        showToast('❌ Could not find the bookmarked post');
+      }
+    }
   },150);
 }
 
@@ -1400,16 +1394,52 @@ function highlightAndScroll(el){
 
 function findElementInDom(b){
   var targetUrl=fixUrl(b.url); var hasSpecificUrl=targetUrl.includes('/p/');
-  var fullText=(b.fullText||b.title||'').trim().toLowerCase(); var found=null;
+  var fullText=(b.fullText||b.title||'').trim().toLowerCase();
+  var found=null;
+  var bestScore=0;
+  var bestEl=null;
+
   document.querySelectorAll('.n4xnA,.cQMaT,.RNmOtb,.asQXV,.zR38ld').forEach(function(el){
     if(found)return;
-    el.querySelectorAll('a[href]').forEach(function(a){if(!found&&a.href&&fixUrl(a.href)===targetUrl)found=el;});
-    if(!found&&!hasSpecificUrl&&fullText.length>20){
-      var elText=(el.innerText||'').trim().toLowerCase();
-      if(fullText.length>=30&&elText.includes(fullText.substring(0,60)))found=el;
+
+    // Method 1: Exact URL match (strongest signal)
+    el.querySelectorAll('a[href]').forEach(function(a){
+      if(!found&&a.href){
+        var fixedHref=fixUrl(a.href);
+        if(fixedHref===targetUrl) found=el;
+        // Also try matching just the post ID part
+        if(!found&&hasSpecificUrl){
+          var targetPostId=targetUrl.match(/\/p\/([^/?#]+)/);
+          var elPostId=fixedHref.match(/\/p\/([^/?#]+)/);
+          if(targetPostId&&elPostId&&targetPostId[1]===elPostId[1]) found=el;
+        }
+      }
+    });
+    if(found)return;
+
+    // Method 2: Text-based matching using the scoring engine
+    if(fullText.length>10){
+      var elText=(el.innerText||'').trim();
+      if(elText.length<10)return;
+      var elTextLower=elText.toLowerCase();
+
+      // Direct substring match (original logic but both directions)
+      if(fullText.length>=30&&elTextLower.includes(fullText.substring(0,60))){found=el;return;}
+      if(fullText.length>=20&&elTextLower.includes(fullText.substring(0,40))){found=el;return;}
+      // Reverse: element text found in bookmark text
+      var elSnippet=elTextLower.substring(0,60);
+      if(elSnippet.length>=30&&fullText.includes(elSnippet)){found=el;return;}
+
+      // Semantic scoring — find best match across all elements
+      var score=scorePost({text:elText},fullText);
+      if(score.score>bestScore&&score.score>=50){
+        bestScore=score.score;
+        bestEl=el;
+      }
     }
   });
-  return found;
+
+  return found||bestEl;
 }
 
 function loadBookmarkList(container,filter,badge,classId){
@@ -1434,19 +1464,8 @@ function loadBookmarkList(container,filter,badge,classId){
       var gb=document.createElement('button'); gb.textContent='↗ Go to post'; gb.style.cssText='font-size:11px;color:#fff;background:#1a73e8;border:none;padding:3px 10px;border-radius:8px;cursor:pointer;font-weight:600;';
       gb.onclick=function(e){
         e.preventDefault(); e.stopPropagation();
-        var targetUrl=fixUrl(b.url); var fakeB={url:targetUrl,fullText:b.fullText||b.title||''};
-        var found=findElementInDom(fakeB);
-        if(found){highlightAndScroll(found);return;}
-        gb.textContent='⏳ Loading...'; gb.disabled=true;
-        var waited=0;
-        var waitIv=setInterval(function(){
-          waited+=200;
-          var el=findElementInDom(fakeB);
-          if(el){clearInterval(waitIv);gb.textContent='↗ Go to post';gb.disabled=false;highlightAndScroll(el);return;}
-          var store=postStore[currentClassId];
-          if(store&&store.complete){clearInterval(waitIv);gb.textContent='↗ Go to post';gb.disabled=false;scrollUntilFound(targetUrl,b.fullText||b.title||'');return;}
-          if(waited>30000){clearInterval(waitIv);gb.textContent='↗ Go to post';gb.disabled=false;}
-        },200);
+        var targetUrl=fixUrl(b.url);
+        if(targetUrl) window.open(targetUrl,'_blank');
       };
       br.appendChild(dt); br.appendChild(gb);
       item.appendChild(del); item.appendChild(tb); item.appendChild(te); item.appendChild(br);
