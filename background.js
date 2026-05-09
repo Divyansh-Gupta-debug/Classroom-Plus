@@ -540,6 +540,50 @@ chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
     return true;
   }
 
+  // ─── FETCH ALL POSTS for basic search (no DOM scrolling needed) ──────────────
+  if (message.type === 'FETCH_ALL_POSTS') {
+    var fpClassId = message.classId;
+    if (!fpClassId) { sendResponse({ error: 'Missing classId' }); return true; }
+
+    chrome.identity.getAuthToken({ interactive: false }, function(token) {
+      if (!token) { sendResponse({ announcements: [], coursework: [], materials: [] }); return; }
+
+      resolveNumericCourseId(token, fpClassId, []).then(function(numericId) {
+        return Promise.all([
+          fetchWithDebug(
+            'https://classroom.googleapis.com/v1/courses/' + numericId + '/announcements?pageSize=100',
+            token, 'announcements', [], 'Announcements'
+          ),
+          fetchWithDebug(
+            'https://classroom.googleapis.com/v1/courses/' + numericId + '/courseWork?pageSize=100',
+            token, 'courseWork', [], 'CourseWork'
+          ),
+          fetchWithDebug(
+            'https://classroom.googleapis.com/v1/courses/' + numericId + '/courseWorkMaterials?pageSize=100',
+            token, 'courseWorkMaterial', [], 'Materials'
+          )
+        ]);
+      }).then(function(results) {
+        sendResponse({
+          announcements: results[0] || [],
+          coursework: results[1] || [],
+          materials: results[2] || []
+        });
+      }).catch(function() {
+        sendResponse({ announcements: [], coursework: [], materials: [] });
+      });
+    });
+    return true;
+  }
+
+  // ─── GEMINI QUERY EXPANSION — expand search query into synonyms ──────────────
+  // Moved to content script to avoid MV3 service worker message port issues.
+  // This handler is kept as a no-op fallback.
+  if (message.type === 'GEMINI_EXPAND_QUERY') {
+    sendResponse({ synonyms: [] });
+    return true;
+  }
+
   // ─── DEEP SEARCH: fetch PDFs from stream attachments, extract text, search ──
   if (message.type === 'DEEP_SEARCH') {
     var dsClassId = message.classId;

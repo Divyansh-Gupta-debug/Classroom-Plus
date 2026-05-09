@@ -6,7 +6,8 @@
   "host_permissions": [
     "https://classroom.google.com/*",
     "https://classroom.googleapis.com/*",
-    "https://www.googleapis.com/*"
+    "https://www.googleapis.com/*",
+    "https://generativelanguage.googleapis.com/*"
   ],
   "background": {
     "service_worker": "background.js"

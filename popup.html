@@ -4,32 +4,17 @@
   <meta charset="UTF-8">
   <title>GC AI Bookmark & Search</title>
   <style>
-    body {
-      width: 270px;
-      padding: 16px;
-      font-family: 'Google Sans', Roboto, Arial, sans-serif;
-      background: #f8f9fa;
-      margin: 0;
-    }
-    h2 {
-      color: #1a73e8;
-      font-size: 15px;
-      margin: 0 0 6px 0;
-    }
-    p {
-      font-size: 12px;
-      color: #5f6368;
-      margin: 0 0 10px 0;
-    }
-    .feature {
-      background: #fff;
-      border: 1px solid #dadce0;
-      border-radius: 8px;
-      padding: 8px 12px;
-      margin-top: 6px;
-      font-size: 12px;
-      color: #202124;
-    }
+    body { width:280px; padding:16px; font-family:'Google Sans',Roboto,Arial,sans-serif; background:#f8f9fa; margin:0; }
+    h2 { color:#1a73e8; font-size:15px; margin:0 0 6px 0; }
+    p { font-size:12px; color:#5f6368; margin:0 0 10px 0; }
+    .feature { background:#fff; border:1px solid #dadce0; border-radius:8px; padding:8px 12px; margin-top:6px; font-size:12px; color:#202124; }
+    .api-section { margin-top:12px; padding:10px 12px; background:#fff; border:1px solid #dadce0; border-radius:8px; }
+    .api-section label { font-size:11px; color:#5f6368; font-weight:600; display:block; margin-bottom:4px; }
+    .api-section input { width:100%; padding:6px 8px; border:1px solid #dadce0; border-radius:6px; font-size:12px; outline:none; box-sizing:border-box; }
+    .api-section input:focus { border-color:#1a73e8; }
+    .api-section .status { font-size:10px; margin-top:4px; }
+    .api-section .hint { font-size:10px; color:#9aa0a6; margin-top:4px; }
+    .api-section .hint a { color:#1a73e8; text-decoration:none; }
   </style>
 </head>
 <body>
@@ -40,6 +25,8 @@
   <div class="feature">📝 Bookmark any assignment</div>
   <div class="feature">📋 Bookmark panel beside People section</div>
   <div class="feature">🎯 Filter by All / Assignments / Stream</div>
-  <div class="feature" style="background:#faf5ff;border-color:#ddd6fe;">📄 Deep Search inside PDFs & attachments</div>
+  <div class="feature" style="background:#faf5ff;border-color:#ddd6fe;">📄 Deep Search inside PDFs</div>
+  <div class="feature" style="background:#e8f5e9;border-color:#a5d6a7;">🧠 Smart Semantic Search (offline, no API key needed)</div>
+  <script src="popup.js"></script>
 </body>
 </html>

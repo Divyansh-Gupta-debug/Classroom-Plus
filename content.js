@@ -68,8 +68,379 @@ function getAllBookmarks(classId, callback) {
   } catch(e) { callback([]); }
 }
 
-// ─── SEARCH FUNCTIONS ─────────────────────────────────────────────────────────
+// ─── LOCAL SEMANTIC SEARCH ENGINE ─────────────────────────────────────────────
+// Client-side search with: stemming, synonym expansion, TF-IDF ranking,
+// proximity scoring, fuzzy matching, n-gram overlap. No API needed.
 
+// ── PORTER STEMMER (simplified for academic English) ──────────────────────────
+var STEM_CACHE = {};
+function stem(word) {
+  if (!word || word.length < 3) return word;
+  if (STEM_CACHE[word]) return STEM_CACHE[word];
+  var w = word.toLowerCase();
+  // Step 1: plurals and past tenses
+  if (w.endsWith('ies') && w.length > 4) w = w.slice(0, -3) + 'y';
+  else if (w.endsWith('sses')) w = w.slice(0, -2);
+  else if (w.endsWith('ness')) w = w.slice(0, -4);
+  else if (w.endsWith('ment') && w.length > 5) w = w.slice(0, -4);
+  else if (w.endsWith('ing') && w.length > 5) {
+    w = w.slice(0, -3);
+    if (w.endsWith('t') && w.endsWith('tt')) w = w.slice(0, -1);
+  }
+  else if (w.endsWith('tion')) w = w.slice(0, -4) + 't';
+  else if (w.endsWith('sion')) w = w.slice(0, -4) + 'd';
+  else if (w.endsWith('ation') && w.length > 6) w = w.slice(0, -5) + 'e';
+  else if (w.endsWith('ated') && w.length > 5) w = w.slice(0, -1);
+  else if (w.endsWith('ment') && w.length > 5) w = w.slice(0, -4);
+  else if (w.endsWith('ness') && w.length > 5) w = w.slice(0, -4);
+  else if (w.endsWith('able') && w.length > 5) w = w.slice(0, -4);
+  else if (w.endsWith('ible') && w.length > 5) w = w.slice(0, -4);
+  else if (w.endsWith('ally') && w.length > 5) w = w.slice(0, -4);
+  else if (w.endsWith('ful')) w = w.slice(0, -3);
+  else if (w.endsWith('ous') && w.length > 4) w = w.slice(0, -3);
+  else if (w.endsWith('ive') && w.length > 4) w = w.slice(0, -3);
+  else if (w.endsWith('ed') && w.length > 4) w = w.slice(0, -2);
+  else if (w.endsWith('ly') && w.length > 4) w = w.slice(0, -2);
+  else if (w.endsWith('er') && w.length > 4) w = w.slice(0, -2);
+  else if (w.endsWith('es') && w.length > 3) w = w.slice(0, -2);
+  else if (w.endsWith('s') && !w.endsWith('ss') && w.length > 3) w = w.slice(0, -1);
+  STEM_CACHE[word] = w;
+  return w;
+}
+
+// ── STOP WORDS (skip these in scoring) ────────────────────────────────────────
+var STOP_WORDS = {};
+'a an the is are was were be been being have has had do does did will would shall should may might can could and but or nor for yet so at by from in into of on to with as if then than that this these those it its he she they we you i me my our your his her them'.split(' ').forEach(function(w) { STOP_WORDS[w] = true; });
+
+// ── SYNONYM MAP (expanded academic vocabulary) ───────────────────────────────
+var SYNONYM_GROUPS = [
+  // Grades & evaluation
+  ['grade','grades','mark','marks','score','scores','points','gpa','cgpa','sgpa','result','results','obtained','grading','graded','rubric','evaluation','evaluated','performance','percentile','percentage','percent'],
+  // Exams
+  ['exam','exams','examination','examinations','test','tests','quiz','quizzes','viva','assessment','assessments','evaluation','paper','papers','mid','midterm','midsem','mid-sem','final','finals','endsem','end-sem','end sem','terminal','prelim','prelims','re-exam','reexam','backlog','supplementary','supp'],
+  // Assignments & homework
+  ['assignment','assignments','homework','hw','submission','submissions','submit','submitted','submitting','task','tasks','deliverable','deliverables','exercise','exercises','problem set','pset','worksheet','lab report','lab'],
+  // Deadlines
+  ['deadline','deadlines','due date','due','last date','cutoff','cut-off','closing date','submission date','extended','extension','late submission','penalty'],
+  // Lectures & classes
+  ['lecture','lectures','lec','lect','class','classes','session','sessions','tutorial','tutorials','tut','seminar','seminars','workshop','workshops','lab','labs','practical','practicals'],
+  // Notes & materials
+  ['notes','note','material','materials','slides','slide','handout','handouts','resource','resources','reference','references','reading','readings','textbook','book','books','pdf','ppt','doc','chapter','unit','module','syllabus','curriculum'],
+  // Cancellation & schedule changes
+  ['cancel','cancelled','canceled','cancellation','postpone','postponed','postponement','reschedule','rescheduled','rescheduling','defer','deferred','off','holiday','no class','suspended','delay','delayed'],
+  // Meetings & communication
+  ['meeting','meetings','meet','zoom','google meet','teams','call','conference','webinar','office hours','consultation','discussion','doubt session','doubt clearing'],
+  // Questions & help
+  ['doubt','doubts','question','questions','query','queries','clarification','help','issue','issues','problem','problems','confusion','stuck','error','bug','fix'],
+  // Projects & reports
+  ['project','projects','report','reports','implementation','demo','demonstration','presentation','presentations','thesis','dissertation','research','paper','poster','prototype','capstone','mini project','major project'],
+  // Files & documents
+  ['pdf','file','files','document','documents','doc','docx','attachment','attachments','ppt','pptx','xlsx','spreadsheet','csv','zip','upload','uploaded','download','shared'],
+  // Videos & recordings
+  ['video','videos','recording','recordings','record','recorded','watch','youtube','lecture recording','replay','stream','live','webcast','tutorial video'],
+  // Groups & teams
+  ['group','groups','team','teams','pair','partner','partners','member','members','teammate','teammates','collaboration','collaborative','group project','team project'],
+  // Website & links
+  ['website','websites','site','sites','link','links','url','urls','webpage','web page','portal','online','platform','login','access','dashboard'],
+  // Attendance
+  ['attendance','absent','absent','present','proxy','roll call','roll number','register','registered','enrollment','enrolled'],
+  // Fees & payments
+  ['fee','fees','payment','paid','pay','scholarship','stipend','financial','reimbursement','refund'],
+  // Schedule & timetable
+  ['schedule','timetable','time table','calendar','planner','slot','slots','timing','timings','weekday','weekend','morning','afternoon','evening'],
+  // Faculty & staff
+  ['professor','prof','teacher','instructor','faculty','sir','maam','madam','dr','ta','teaching assistant','mentor','advisor','coordinator','hod','dean'],
+  // Results & outcomes
+  ['pass','passed','fail','failed','clear','cleared','qualify','qualified','eligible','eligibility','criteria','requirement','requirements','prerequisite','prerequisites'],
+  // Communication
+  ['email','mail','message','notification','notice','announcement','announcements','circular','memo','update','updates','reminder','alert','info','information'],
+  // Programming & CS
+  ['code','coding','program','programming','algorithm','data structure','database','sql','python','java','javascript','cpp','c++','html','css','api','git','github','repository','repo','debug','compile','runtime','syntax'],
+  // Lab & practical
+  ['lab','laboratory','experiment','practical','viva','observation','procedure','apparatus','setup','simulation','demo'],
+  // Placements & career
+  ['placement','placements','internship','internships','job','jobs','career','company','companies','recruit','recruitment','interview','interviews','resume','cv','offer','package','ctc','stipend'],
+  // Semester & academic terms
+  ['semester','sem','term','quarter','year','academic year','session','batch','section','division','branch','department','dept','course','courses','subject','subjects','elective','electives','minor','major','credit','credits','cgpa','sgpa'],
+  // Important / urgent
+  ['important','urgent','mandatory','compulsory','required','optional','necessary','must','critical','essential','priority','asap','immediately','compulsory'],
+];
+
+// Build a fast lookup: word → list of synonym words
+var SYNONYM_LOOKUP = {};
+SYNONYM_GROUPS.forEach(function(group) {
+  group.forEach(function(term) {
+    var key = term.toLowerCase();
+    if (!SYNONYM_LOOKUP[key]) SYNONYM_LOOKUP[key] = [];
+    group.forEach(function(syn) {
+      if (syn !== term) SYNONYM_LOOKUP[key].push(syn.toLowerCase());
+    });
+  });
+});
+
+// ── ACRONYM EXPANSION ─────────────────────────────────────────────────────────
+var ACRONYMS = {
+  'ml': ['machine learning'], 'ai': ['artificial intelligence'], 'dl': ['deep learning'],
+  'nn': ['neural network','neural networks'], 'cnn': ['convolutional neural network'],
+  'rnn': ['recurrent neural network'], 'nlp': ['natural language processing'],
+  'cv': ['computer vision','curriculum vitae'], 'os': ['operating system','operating systems'],
+  'dbms': ['database management system'], 'dsa': ['data structures and algorithms','data structure'],
+  'oop': ['object oriented programming'], 'oops': ['object oriented programming'],
+  'cn': ['computer networks','computer network'], 'se': ['software engineering'],
+  'hci': ['human computer interaction'], 'iot': ['internet of things'],
+  'aws': ['amazon web services'], 'gcp': ['google cloud platform'],
+  'ui': ['user interface'], 'ux': ['user experience'],
+  'qa': ['quality assurance','question answer'], 'ci': ['continuous integration'],
+  'cd': ['continuous deployment','continuous delivery'],
+  'api': ['application programming interface'],
+  'sdk': ['software development kit'], 'ide': ['integrated development environment'],
+  'vcs': ['version control system'], 'orm': ['object relational mapping'],
+  'rest': ['representational state transfer'], 'http': ['hypertext transfer protocol'],
+  'tcp': ['transmission control protocol'], 'ip': ['internet protocol'],
+  'dns': ['domain name system'], 'ssh': ['secure shell'],
+  'hw': ['homework','hardware'], 'sw': ['software'],
+  'ta': ['teaching assistant'], 'ra': ['research assistant'],
+  'phd': ['doctorate','doctoral'], 'mtech': ['masters','master of technology'],
+  'btech': ['bachelors','bachelor of technology'],
+  'ppt': ['powerpoint','presentation'], 'doc': ['document','word'],
+  'lec': ['lecture'], 'tut': ['tutorial'],
+};
+
+// ── TOKENIZER ─────────────────────────────────────────────────────────────────
+function tokenize(text) {
+  if (!text) return [];
+  return text.toLowerCase()
+    .replace(/[-_\/\\]/g, ' ')       // normalize separators
+    .replace(/[^a-z0-9\s]/g, ' ')    // remove punctuation
+    .split(/\s+/)
+    .filter(function(w) { return w.length >= 2; });
+}
+
+function tokenizeWithStems(text) {
+  var tokens = tokenize(text);
+  var result = [];
+  tokens.forEach(function(t) {
+    result.push(t);
+    var s = stem(t);
+    if (s !== t) result.push(s);
+  });
+  return result;
+}
+
+// ── TF-IDF ENGINE ─────────────────────────────────────────────────────────────
+// Tracks document frequency across all posts for IDF weighting
+var idfCache = {};
+var idfTotalDocs = 0;
+
+function buildIdfIndex(posts) {
+  var df = {};  // document frequency: how many posts contain each term
+  var n = posts.length;
+  posts.forEach(function(p) {
+    var seen = {};
+    var tokens = tokenize(p.text || '');
+    tokens.forEach(function(t) {
+      var s = stem(t);
+      if (!seen[s]) { df[s] = (df[s] || 0) + 1; seen[s] = true; }
+      if (!seen[t]) { df[t] = (df[t] || 0) + 1; seen[t] = true; }
+    });
+  });
+  idfCache = df;
+  idfTotalDocs = n;
+}
+
+function idf(term) {
+  var docFreq = idfCache[term] || idfCache[stem(term)] || 0;
+  if (docFreq === 0) return 1;
+  return Math.log(1 + idfTotalDocs / docFreq);
+}
+
+// ── SCORING ENGINE ────────────────────────────────────────────────────────────
+// Scores a post against a query. Returns { score, matchType, matchedTerms }
+function scorePost(post, query) {
+  var text = (post.text || '').toLowerCase();
+  var q = query.toLowerCase().trim();
+  if (!text || !q) return { score: 0, matchType: 'none', matchedTerms: [] };
+
+  var score = 0;
+  var matchType = 'none';
+  var matchedTerms = [];
+
+  // Normalize text variants
+  var textNorm = text.replace(/[-_]/g, ' ');
+  var textCompact = text.replace(/[-_\s]/g, '');
+  var qNorm = q.replace(/[-_]/g, ' ');
+  var qCompact = q.replace(/[-_\s]/g, '');
+
+  // ── Signal 1: EXACT PHRASE MATCH (highest weight) ──────────────────────
+  if (text.includes(q)) {
+    score += 100;
+    matchType = 'exact';
+    matchedTerms.push(q);
+  } else if (textNorm.includes(qNorm)) {
+    score += 90;
+    matchType = 'exact';
+    matchedTerms.push(q);
+  } else if (textCompact.includes(qCompact)) {
+    score += 85;
+    matchType = 'exact';
+    matchedTerms.push(q);
+  }
+
+  // ── Signal 2: ALL QUERY WORDS PRESENT (AND match) ─────────────────────
+  var qWords = q.split(/\s+/).filter(function(w) { return w.length >= 2 && !STOP_WORDS[w]; });
+  var qStems = qWords.map(function(w) { return stem(w); });
+  var textTokens = tokenize(text);
+  var textStems = textTokens.map(function(t) { return stem(t); });
+  var textStemSet = {};
+  textStems.forEach(function(s) { textStemSet[s] = true; });
+  textTokens.forEach(function(t) { textStemSet[t] = true; });
+
+  if (qWords.length > 1 && matchType !== 'exact') {
+    var allPresent = qStems.every(function(qs) { return textStemSet[qs]; });
+    if (allPresent) {
+      score += 70;
+      matchType = matchType || 'all_words';
+      matchedTerms = matchedTerms.concat(qWords);
+    }
+  }
+
+  // ── Signal 3: STEM MATCHING with TF-IDF weighting ─────────────────────
+  var stemScore = 0;
+  var stemMatches = 0;
+  qStems.forEach(function(qs) {
+    if (textStemSet[qs]) {
+      stemMatches++;
+      stemScore += idf(qs) * 5; // rare words score higher
+      if (matchedTerms.indexOf(qs) === -1) matchedTerms.push(qs);
+    }
+  });
+  if (stemMatches > 0 && matchType === 'none') matchType = 'stem';
+  score += stemScore;
+
+  // ── Signal 4: SYNONYM MATCHING ────────────────────────────────────────
+  var synScore = 0;
+  qWords.forEach(function(qw) {
+    // Check direct synonym lookup
+    var synonyms = SYNONYM_LOOKUP[qw] || [];
+    // Also check stemmed form
+    var stemmedSyns = SYNONYM_LOOKUP[stem(qw)] || [];
+    var allSyns = synonyms.concat(stemmedSyns);
+
+    // Check acronym expansions
+    if (ACRONYMS[qw]) allSyns = allSyns.concat(ACRONYMS[qw]);
+
+    allSyns.forEach(function(syn) {
+      var synTokens = syn.split(/\s+/);
+      // Multi-word synonym: check if all words present
+      if (synTokens.length > 1) {
+        var allFound = synTokens.every(function(st) {
+          return textStemSet[st] || textStemSet[stem(st)];
+        });
+        if (allFound) {
+          synScore += 40;
+          if (matchedTerms.indexOf(syn) === -1) matchedTerms.push(syn);
+        }
+      } else {
+        if (textStemSet[syn] || textStemSet[stem(syn)]) {
+          synScore += 30;
+          if (matchedTerms.indexOf(syn) === -1) matchedTerms.push(syn);
+        }
+      }
+    });
+  });
+  if (synScore > 0 && matchType === 'none') matchType = 'synonym';
+  score += synScore;
+
+  // ── Signal 5: PROXIMITY SCORING (words near each other score higher) ──
+  if (qWords.length > 1 && score > 0) {
+    var positions = {};
+    textTokens.forEach(function(t, idx) {
+      var s = stem(t);
+      qStems.forEach(function(qs) {
+        if (t === qs || s === qs) {
+          if (!positions[qs]) positions[qs] = [];
+          positions[qs].push(idx);
+        }
+      });
+    });
+    var posKeys = Object.keys(positions);
+    if (posKeys.length >= 2) {
+      // Find minimum span containing one occurrence of each query term
+      var minSpan = textTokens.length;
+      posKeys.forEach(function(k1) {
+        posKeys.forEach(function(k2) {
+          if (k1 === k2) return;
+          positions[k1].forEach(function(p1) {
+            positions[k2].forEach(function(p2) {
+              var span = Math.abs(p1 - p2);
+              if (span < minSpan) minSpan = span;
+            });
+          });
+        });
+      });
+      // Closer = higher bonus (max 20 points if adjacent)
+      if (minSpan <= 30) {
+        score += Math.max(0, 20 - minSpan);
+      }
+    }
+  }
+
+  // ── Signal 6: FUZZY / TYPO TOLERANCE ──────────────────────────────────
+  if (score === 0 && qWords.length > 0) {
+    var fuzzyScore = 0;
+    qWords.forEach(function(qw) {
+      if (qw.length < 3) return;
+      // Check first 300 chars (title area) for fuzzy matches
+      var titleTokens = tokenize(text.substring(0, 300));
+      titleTokens.forEach(function(tw) {
+        if (tw.length < 3) return;
+        var sim = stringSimilarity(qw, tw);
+        if (sim >= 0.78 && tw !== qw) {
+          fuzzyScore += sim * 15;
+          if (matchedTerms.indexOf(tw + '≈' + qw) === -1) matchedTerms.push(tw + '≈' + qw);
+        }
+      });
+    });
+    if (fuzzyScore > 0) matchType = 'fuzzy';
+    score += fuzzyScore;
+  }
+
+  // ── Signal 7: N-GRAM OVERLAP (catches partial word matches) ───────────
+  if (score === 0 && q.length >= 4) {
+    var qGrams = getNgrams(q, 3);
+    var tGrams = getNgrams(text.substring(0, 500), 3);
+    var overlap = 0;
+    qGrams.forEach(function(g) { if (tGrams.indexOf(g) !== -1) overlap++; });
+    var ngramScore = (overlap / qGrams.length) * 20;
+    if (ngramScore >= 10) {
+      score += ngramScore;
+      if (matchType === 'none') matchType = 'ngram';
+    }
+  }
+
+  // ── Title boost: matches in first 80 chars score higher ───────────────
+  if (score > 0) {
+    var titleText = text.substring(0, 80);
+    qWords.forEach(function(qw) {
+      if (titleText.includes(qw) || titleText.includes(stem(qw))) {
+        score += 15;
+      }
+    });
+  }
+
+  return { score: score, matchType: matchType, matchedTerms: matchedTerms };
+}
+
+function getNgrams(text, n) {
+  var grams = [];
+  var t = text.replace(/\s+/g, ' ');
+  for (var i = 0; i <= t.length - n; i++) {
+    grams.push(t.substring(i, i + n));
+  }
+  return grams;
+}
+
+// ── LEVENSHTEIN (kept from original) ──────────────────────────────────────────
 function levenshtein(a, b) {
   var m = a.length, n = b.length, dp = [], i, j;
   for (i = 0; i <= m; i++) dp[i] = [i];
@@ -85,80 +456,11 @@ function stringSimilarity(a, b) {
   return maxLen ? (maxLen - levenshtein(a, b)) / maxLen : 1;
 }
 
-// Normal search: exact substring only
+// ── LEGACY COMPAT: semanticMatch (used by other parts of the code) ───────────
 function semanticMatch(text, query) {
   if (!text || !query) return false;
-  return text.toLowerCase().includes(query.toLowerCase().trim());
-}
-
-// Smart search: typo tolerance + tight synonyms
-var SMART_SYNONYMS = [
-  ['grade','grades','mark','marks','score','scores','points','gpa','cgpa','result','results','obtained'],
-  ['website','site','link','url','webpage','web page','portal','online','platform'],
-  ['assignment','homework','submission','submit','task','due','deliverable'],
-  ['exam','examination','test','quiz','viva','assessment','evaluation','paper','mid','final','terminal','midsem','endsem'],
-  ['deadline','due date','last date','cutoff','closing date','submission date'],
-  ['lecture','class','session','lec','lect'],
-  ['notes','material','slides','handout','handouts','resource','resources','reference','reading'],
-  ['cancel','cancelled','canceled','postpone','postponed','reschedule','rescheduled','off'],
-  ['meeting','meet','zoom','google meet','teams','call','conference'],
-  ['doubt','question','query','clarification','help','issue','problem'],
-  ['project','report','implementation','demo','presentation'],
-  ['pdf','file','document','doc','attachment','ppt','pptx','xlsx'],
-  ['video','recording','record','recorded','watch','youtube','lecture recording'],
-  ['group','team','pair','partner','partners'],
-];
-
-// Returns similarity threshold based on word length:
-// short words need stricter match to avoid false positives,
-// but we also allow 1-edit distance for words >=4 chars (80% accuracy goal)
-function fuzzyThreshold(len) {
-  if (len <= 3) return 1.0;   // 3-letter words must match exactly
-  if (len === 4) return 0.75; // 1 edit allowed (e.g. "sits"->"site" = 0.75)
-  if (len === 5) return 0.80; // 1 edit allowed (e.g. "sits"->"sites" = 0.80)
-  return 0.82;                // longer words: up to ~1-2 edits
-}
-
-function smartSemanticMatch(text, query) {
-  if (!text || !query) return false;
-  var t = text.toLowerCase();
-  var q = query.toLowerCase().trim();
-  var qWords = q.split(/\s+/).filter(function(w){ return w.length >= 3; });
-  // Search across more of the text for typo matching, not just title
-  var searchText = t.substring(0, 400);
-  var textWords = searchText.split(/\W+/).filter(function(w){ return w.length >= 3; });
-  var hasTypoMatch = qWords.some(function(qw) {
-    if (qw.length < 4) return false; // skip very short words for fuzzy
-    var threshold = fuzzyThreshold(qw.length);
-    return textWords.some(function(tw) {
-      // Must be similar length (within 2 chars) to avoid false matches
-      if (Math.abs(tw.length - qw.length) > 2) return false;
-      return tw !== qw && stringSimilarity(qw, tw) >= threshold;
-    });
-  });
-  if (hasTypoMatch) return true;
-  // Synonym matching: require EXACT word boundary match in query,
-  // not substring (prevents "a" matching "assignment", etc.)
-  return SMART_SYNONYMS.some(function(group) {
-    var queryInGroup = group.some(function(syn) {
-      // query must equal the synonym exactly, or the query must contain
-      // the synonym as a whole word (not just substring)
-      if (q === syn) return true;
-      // multi-word synonyms: allow contains
-      if (syn.indexOf(' ') !== -1 && q.includes(syn)) return true;
-      // single-word synonyms: whole-word match only
-      var re = new RegExp('(?:^|\\s)' + syn.replace(/[.*+?^${}()|[\]\\]/g,'\\$&') + '(?:\\s|$)');
-      return re.test(q);
-    });
-    if (!queryInGroup) return false;
-    // Also require the synonym found in text to be a real word match
-    return group.some(function(syn) {
-      if (syn === q) return false;
-      if (syn.indexOf(' ') !== -1) return t.includes(syn);
-      var re = new RegExp('(?:^|\\s|[^a-z])' + syn.replace(/[.*+?^${}()|[\]\\]/g,'\\$&') + '(?:[^a-z]|\\s|$)');
-      return re.test(t);
-    });
-  });
+  var result = scorePost({ text: text }, query);
+  return result.score >= 10;
 }
 
 // ─── COLLECT POSTS FROM DOM ───────────────────────────────────────────────────
@@ -210,8 +512,18 @@ function startScroll(classId) {
   var userTop = scroller.scrollTop;
   var prev = document.querySelectorAll('.n4xnA').length;
   var streak = 0, ticks = 0;
+  var userScrolling = false;
+  var scrollTimer = null;
+
+  // Detect if user is manually scrolling
+  function onUserScroll() { userScrolling = true; clearTimeout(scrollTimer); scrollTimer = setTimeout(function(){ userScrolling = false; }, 500); }
+  window.addEventListener('wheel', onUserScroll, { passive: true });
+  window.addEventListener('touchmove', onUserScroll, { passive: true });
+
   var iv = setInterval(function() {
-    if (currentClassId !== classId) { clearInterval(iv); scrollingFor = null; return; }
+    if (currentClassId !== classId) { clearInterval(iv); scrollingFor = null; cleanup(); return; }
+    // Pause if user is scrolling
+    if (userScrolling) return;
     try {
       scroller = getStreamScroller();
       var cur = document.querySelectorAll('.n4xnA').length;
@@ -229,7 +541,7 @@ function startScroll(classId) {
       }
       if (streak >= 30 || ticks >= 600) {
         clearInterval(iv); scrollingFor = null;
-        if (currentClassId !== classId) return;
+        if (currentClassId !== classId) { cleanup(); return; }
         if (!postStore[classId]) postStore[classId] = { posts:[], complete:false };
         postStore[classId].posts = collectDomPosts(classId);
         postStore[classId].complete = true;
@@ -240,13 +552,19 @@ function startScroll(classId) {
           var fi2 = document.getElementById('gcn-filter');
           if (qi2 && qi2.value.trim()) renderResults(qi2.value.trim(), fi2?fi2.value:'all', classId);
         }
+        cleanup();
         return;
       }
       scroller.scrollTop = scroller.scrollHeight + 99999;
       requestAnimationFrame(function() { scroller.scrollTop = userTop; });
       ticks++;
-    } catch(e){ clearInterval(iv); scrollingFor=null; }
+    } catch(e){ clearInterval(iv); scrollingFor=null; cleanup(); }
   }, 150);
+
+  function cleanup() {
+    window.removeEventListener('wheel', onUserScroll);
+    window.removeEventListener('touchmove', onUserScroll);
+  }
 }
 
 // ─── SEARCH ───────────────────────────────────────────────────────────────────
@@ -255,10 +573,169 @@ function doSearch(query, filter) {
   var classId = currentClassId;
   if (!classId) { showToast('Open a class first'); return; }
   if (!postStore[classId]) postStore[classId] = { posts:[], complete:false };
-  var fresh = collectDomPosts(classId);
-  if (fresh.length > 0) postStore[classId].posts = fresh;
+
+  // Always collect what's visible on screen right now
+  var visible = collectDomPosts(classId);
+  var existing = postStore[classId].posts;
+  var seenTexts = {};
+  existing.forEach(function(p) {
+    var k = (p.text||'').substring(0,50).toLowerCase();
+    if (k.length > 10) seenTexts[k] = true;
+  });
+  visible.forEach(function(p) {
+    var k = (p.text||'').substring(0,50).toLowerCase();
+    if (k.length > 10 && !seenTexts[k]) { existing.push(p); seenTexts[k] = true; }
+  });
+  postStore[classId].posts = existing;
+
+  // Show results immediately
   renderResults(query, filter, classId);
-  if (!postStore[classId].complete && scrollingFor !== classId) startScroll(classId);
+
+  // Fetch from API if not done yet
+  if (!postStore[classId].complete && !postStore[classId].fetching) {
+    postStore[classId].fetching = true;
+    chrome.runtime.sendMessage({ type: 'FETCH_ALL_POSTS', classId: classId }, function(res) {
+      postStore[classId].fetching = false;
+      if (chrome.runtime.lastError || !res || currentClassId !== classId) return;
+
+      var apiPosts = [];
+      (res.announcements || []).forEach(function(a) {
+        apiPosts.push({ classId:classId, text:(a.text||'').trim(), title:(a.text||'').substring(0,80), url:a.alternateLink||'', type:'stream', date:a.creationTime?new Date(a.creationTime).toLocaleDateString():'', element:null });
+      });
+      (res.coursework || []).forEach(function(cw) {
+        apiPosts.push({ classId:classId, text:((cw.title||'')+' '+(cw.description||'')).trim(), title:(cw.title||'').substring(0,80), url:cw.alternateLink||'', type:'assignment', date:cw.creationTime?new Date(cw.creationTime).toLocaleDateString():'', element:null });
+      });
+      (res.materials || []).forEach(function(m) {
+        apiPosts.push({ classId:classId, text:((m.title||'')+' '+(m.description||'')).trim(), title:(m.title||'').substring(0,80), url:m.alternateLink||'', type:'assignment', date:m.creationTime?new Date(m.creationTime).toLocaleDateString():'', element:null });
+      });
+
+      apiPosts.forEach(function(p) {
+        var k = (p.text||'').substring(0,50).toLowerCase();
+        if (k.length > 10 && !seenTexts[k]) { existing.push(p); seenTexts[k] = true; }
+      });
+      postStore[classId].posts = existing;
+      postStore[classId].complete = true;
+
+      var inp = document.getElementById('gcn-search-input');
+      var fil = document.getElementById('gcn-filter');
+      if (inp && inp.value.trim() && currentClassId === classId) {
+        renderResults(inp.value.trim(), fil?fil.value:'all', classId);
+      }
+    });
+  }
+}
+
+// Find a DOM element that matches the post text
+function findElementByText(text) {
+  if (!text || text.length < 10) return null;
+  var snippet = text.substring(0, 50).toLowerCase();
+  var found = null;
+  document.querySelectorAll('.n4xnA,.cQMaT,.RNmOtb,.asQXV,.zR38ld').forEach(function(el) {
+    if (found) return;
+    if ((el.innerText || '').toLowerCase().includes(snippet)) found = el;
+  });
+  return found;
+}
+
+// Scroll down progressively to find a post, then highlight it
+function scrollToPost(text, url, query) {
+  var scroller = getStreamScroller();
+  var searchSnippets = [];
+
+  // Build multiple search strings to match against DOM
+  if (text && text.length >= 15) searchSnippets.push(text.substring(0, 60).toLowerCase());
+  if (text && text.length >= 30) searchSnippets.push(text.substring(0, 30).toLowerCase());
+  if (url) {
+    // Extract post ID from URL if possible
+    var postIdMatch = url.match(/\/p\/([^/?#]+)/);
+    if (postIdMatch) searchSnippets.push(postIdMatch[1]);
+  }
+
+  if (searchSnippets.length === 0) {
+    window.location.href = fixUrl(url);
+    return;
+  }
+
+  var ticks = 0;
+  var scrollStep = 600; // pixels per step
+
+  var iv = setInterval(function() {
+    ticks++;
+
+    // Check all post elements on page
+    var found = null;
+    document.querySelectorAll('.n4xnA,.cQMaT,.RNmOtb,.asQXV,.zR38ld').forEach(function(el) {
+      if (found) return;
+      var elText = (el.innerText || '').toLowerCase();
+      for (var s = 0; s < searchSnippets.length; s++) {
+        if (elText.includes(searchSnippets[s])) { found = el; return; }
+      }
+      // Also check href links inside the element
+      if (url) {
+        el.querySelectorAll('a[href]').forEach(function(a) {
+          if (!found && a.href && fixUrl(a.href) === fixUrl(url)) found = el;
+        });
+      }
+    });
+
+    if (found) {
+      clearInterval(iv);
+      found.style.outline = '3px solid #1a73e8';
+      found.style.boxShadow = '0 0 0 5px rgba(26,115,232,0.3)';
+      found.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      if (query) highlightKeywordInElement(found, query);
+      setTimeout(function() { found.style.outline = ''; found.style.boxShadow = ''; }, 5000);
+      return;
+    }
+
+    // Give up after ~30 seconds or if we've reached the bottom
+    if (ticks > 150 || (scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 50)) {
+      clearInterval(iv);
+      // Fallback: navigate to the post URL
+      if (url) window.location.href = fixUrl(url);
+      return;
+    }
+
+    // Scroll down one step
+    scroller.scrollBy({ top: scrollStep, behavior: 'auto' });
+  }, 200);
+}
+
+// ─── HIGHLIGHT KEYWORD IN DOM ELEMENT ─────────────────────────────────────────
+function highlightKeywordInElement(el, query) {
+  var q = query.toLowerCase().trim();
+  if (!q) return;
+  var marks = [];
+  var walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, null, false);
+  var textNodes = [];
+  while (walker.nextNode()) textNodes.push(walker.currentNode);
+
+  textNodes.forEach(function(node) {
+    var text = node.nodeValue;
+    var idx = text.toLowerCase().indexOf(q);
+    if (idx === -1) return;
+    var parent = node.parentNode;
+    if (!parent) return;
+    var frag = document.createDocumentFragment();
+    if (idx > 0) frag.appendChild(document.createTextNode(text.substring(0, idx)));
+    var mark = document.createElement('mark');
+    mark.className = 'gcn-highlight';
+    mark.style.cssText = 'background:#fff176;color:#202124;border-radius:3px;padding:1px 3px;box-shadow:0 0 0 2px #fff176;';
+    mark.textContent = text.substring(idx, idx + q.length);
+    frag.appendChild(mark);
+    marks.push(mark);
+    if (idx + q.length < text.length) frag.appendChild(document.createTextNode(text.substring(idx + q.length)));
+    parent.replaceChild(frag, node);
+  });
+
+  if (marks.length > 0) marks[0].scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+  setTimeout(function() {
+    marks.forEach(function(m) {
+      if (m.parentNode) m.parentNode.replaceChild(document.createTextNode(m.textContent), m);
+    });
+    el.normalize();
+  }, 6000);
 }
 
 // ─── SNIPPET HELPER ───────────────────────────────────────────────────────────
@@ -288,7 +765,6 @@ function buildResultItem(r, i, query, classId, panel, isSmartResult) {
   item.onmouseover = function(){ item.style.background = isSmartResult ? '#fef3c7' : '#f8f9fa'; };
   item.onmouseout  = function(){ item.style.background = isSmartResult ? '#fffbeb' : '#fff'; };
 
-  // Top row: type badge + optional smart badge + number
   var topRow = document.createElement('div');
   topRow.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:5px;';
   var badge = document.createElement('span');
@@ -307,18 +783,15 @@ function buildResultItem(r, i, query, classId, panel, isSmartResult) {
   num.style.cssText = 'font-size:11px;color:#bdc1c6;';
   topRow.appendChild(num);
 
-  // Title
   var titleEl = document.createElement('div');
   titleEl.textContent = (r.title||r.text||'').substring(0,120);
   titleEl.style.cssText = 'font-size:13px;font-weight:600;color:#202124;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:4px;';
   titleEl.title = r.title||r.text||'';
 
-  // Snippet with highlighted query
   var snippetEl = document.createElement('div');
   snippetEl.style.cssText = 'font-size:12px;color:#5f6368;line-height:1.5;margin-bottom:7px;word-break:break-word;';
   snippetEl.innerHTML = getSnippet(r.text || '', query);
 
-  // Bottom row
   var bottomRow = document.createElement('div');
   bottomRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;';
   var dt = document.createElement('span');
@@ -342,8 +815,21 @@ function buildResultItem(r, i, query, classId, panel, isSmartResult) {
     if (r.element && document.contains(r.element)) {
       r.element.style.outline='3px solid #1a73e8'; r.element.style.boxShadow='0 0 0 5px rgba(26,115,232,0.3)';
       r.element.scrollIntoView({behavior:'smooth',block:'center'});
-      setTimeout(function(){ r.element.style.outline=''; r.element.style.boxShadow=''; }, 3000);
-    } else { window.location.assign(fixUrl(r.url)); }
+      highlightKeywordInElement(r.element, query);
+      setTimeout(function(){ r.element.style.outline=''; r.element.style.boxShadow=''; }, 5000);
+    } else {
+      // Try to find element by text first
+      var el = findElementByText(r.text || r.title || '');
+      if (el) {
+        el.style.outline='3px solid #1a73e8'; el.style.boxShadow='0 0 0 5px rgba(26,115,232,0.3)';
+        el.scrollIntoView({behavior:'smooth',block:'center'});
+        highlightKeywordInElement(el, query);
+        setTimeout(function(){ el.style.outline=''; el.style.boxShadow=''; }, 5000);
+      } else {
+        // Post not visible — open it in new tab
+        window.open(fixUrl(r.url), '_blank');
+      }
+    }
   };
   grp.appendChild(bmBtn); grp.appendChild(goBtn);
   bottomRow.appendChild(dt); bottomRow.appendChild(grp);
@@ -362,11 +848,32 @@ function renderResults(query, filter, classId) {
   var posts = store ? store.posts : [];
   var complete = store ? store.complete : false;
 
-  var results = posts.filter(function(p) {
-    if (p.classId !== classId) return false;
-    if (filter !== 'all' && p.type !== filter) return false;
-    return semanticMatch(p.text, query);
+  // Build IDF index for TF-IDF scoring
+  buildIdfIndex(posts);
+
+  // Score every post
+  var scored = [];
+  var seen = {};
+  posts.forEach(function(p) {
+    if (p.classId !== classId) return;
+    if (filter !== 'all' && p.type !== filter) return;
+    var key = (p.text || '').substring(0, 80) + '|' + p.type;
+    if (seen[key]) return;
+    seen[key] = true;
+    var result = scorePost(p, query);
+    if (result.score >= 10) {
+      scored.push({ post: p, score: result.score, matchType: result.matchType, matchedTerms: result.matchedTerms });
+    }
   });
+
+  // Sort by score descending
+  scored.sort(function(a, b) { return b.score - a.score; });
+
+  // Split into exact matches (score >= 70) and smart matches (score < 70)
+  var exactResults = scored.filter(function(s) { return s.score >= 70; });
+  var smartResults = scored.filter(function(s) { return s.score < 70 && s.score >= 10; });
+
+  var totalResults = scored.length;
 
   var old = document.getElementById('gcn-api-results'); if (old) old.remove();
   var panel = document.createElement('div');
@@ -376,7 +883,7 @@ function renderResults(query, filter, classId) {
 
   var debug = document.createElement('div');
   debug.style.cssText = 'background:#f1f8e9;color:#388e3c;font-size:10px;padding:4px 14px;border-bottom:1px solid #c8e6c9;font-family:monospace;';
-  debug.textContent = '🔍 Searching class: ' + classId + (complete ? ' ✓ complete' : ' … loading');
+  debug.textContent = '🔍 Searching class: ' + classId + (complete ? ' ✓ complete' : ' … loading') + ' | ' + posts.length + ' posts indexed';
   panel.appendChild(debug);
 
   if (!complete) {
@@ -387,62 +894,79 @@ function renderResults(query, filter, classId) {
   }
 
   var header = document.createElement('div');
-  header.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:14px 18px;border-bottom:1px solid #f1f3f4;position:sticky;top:0;background:#fff;border-radius:12px 12px 0 0;';
+  header.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:14px 18px;border-bottom:1px solid #f1f3f4;position:sticky;top:0;background:#fff;border-radius:12px 12px 0 0;z-index:1;';
   var htitle = document.createElement('span');
-  htitle.textContent = results.length > 0 ? results.length+' result(s) for "'+query+'"' : 'No results for "'+query+'"';
+  htitle.textContent = totalResults > 0 ? totalResults + ' result(s) for "' + query + '"' : 'No results for "' + query + '"';
   htitle.style.cssText = 'font-size:14px;font-weight:600;color:#202124;';
   var closeBtn = document.createElement('button');
-  closeBtn.textContent='✕'; closeBtn.style.cssText='background:#f1f3f4;border:none;border-radius:50%;width:28px;height:28px;cursor:pointer;font-size:13px;color:#5f6368;';
-  closeBtn.onclick=function(){ panel.remove(); };
+  closeBtn.textContent = '✕'; closeBtn.style.cssText = 'background:#f1f3f4;border:none;border-radius:50%;width:28px;height:28px;cursor:pointer;font-size:13px;color:#5f6368;';
+  closeBtn.onclick = function() { panel.remove(); };
   header.appendChild(htitle); header.appendChild(closeBtn); panel.appendChild(header);
 
-  if (results.length === 0) {
+  if (totalResults === 0) {
     var empty = document.createElement('div');
-    empty.style.cssText='text-align:center;padding:40px 20px;color:#9aa0a6;font-size:13px;';
-    empty.innerHTML='<div style="font-size:36px;margin-bottom:10px">🔍</div>Try different keywords or synonyms.';
+    empty.style.cssText = 'text-align:center;padding:40px 20px;color:#9aa0a6;font-size:13px;';
+    empty.innerHTML = '<div style="font-size:36px;margin-bottom:10px">🔍</div>Try different keywords or synonyms.';
     var deepSuggest = document.createElement('button');
-    deepSuggest.textContent = '📄 Try Deep Search (search inside PDFs)';
+    deepSuggest.textContent = '📄 Try Deep Search';
     deepSuggest.style.cssText = 'margin-top:12px;padding:8px 18px;background:#ede9fe;color:#6d28d9;border:1.5px solid #6d28d9;border-radius:20px;font-size:12px;cursor:pointer;font-weight:600;';
-    deepSuggest.onclick = function() { panel.remove(); doDeepSearch(query); };
+    deepSuggest.onclick = function() {
+      panel.remove();
+      var toggle = document.getElementById('gcn-deep-search-toggle');
+      if (toggle && !toggle.checked) { toggle.checked = true; toggle.dispatchEvent(new Event('change')); }
+      else { doDeepSearch(query); }
+    };
     empty.appendChild(document.createElement('br'));
     empty.appendChild(deepSuggest);
     panel.appendChild(empty);
   } else {
-    results.forEach(function(r, i) {
-      panel.appendChild(buildResultItem(r, i, query, classId, panel, false));
-    });
-  }
+    // Render exact matches
+    if (exactResults.length > 0) {
+      exactResults.forEach(function(s, i) {
+        panel.appendChild(buildResultItem(s.post, i, query, classId, panel, false));
+      });
+    }
 
-  // Smart results footer
-  var smartResults = posts.filter(function(p) {
-    if (p.classId !== classId) return false;
-    if (filter !== 'all' && p.type !== filter) return false;
-    if (semanticMatch(p.text, query)) return false;
-    return smartSemanticMatch(p.text, query);
-  });
+    // Render smart matches with divider
+    if (smartResults.length > 0) {
+      var divider = document.createElement('div');
+      divider.style.cssText = 'padding:10px 18px 4px;background:#e8f5e9;border-top:2px solid #66bb6a;border-bottom:1px solid #a5d6a7;display:flex;align-items:center;gap:8px;';
+      var matchLabels = [];
+      smartResults.forEach(function(s) {
+        s.matchedTerms.forEach(function(t) {
+          if (matchLabels.indexOf(t) === -1 && matchLabels.length < 5) matchLabels.push(t);
+        });
+      });
+      divider.innerHTML = '<span style="font-size:13px;">🧠</span><span style="font-size:12px;font-weight:600;color:#2e7d32;">' +
+        smartResults.length + ' smart result' + (smartResults.length > 1 ? 's' : '') +
+        (matchLabels.length > 0 ? ' — matched: "' + matchLabels.join('", "') + '"' : '') + '</span>';
+      panel.appendChild(divider);
+
+      smartResults.forEach(function(s, i) {
+        var matchLabel = s.matchType;
+        if (s.matchType === 'synonym') matchLabel = s.matchedTerms[0] || 'synonym';
+        else if (s.matchType === 'stem') matchLabel = 'stem: ' + (s.matchedTerms[0] || '');
+        else if (s.matchType === 'fuzzy') matchLabel = 'typo fix';
+        var item = buildResultItem(s.post, exactResults.length + i, query, classId, panel, true);
+        // Update the smart badge text
+        var smartBadge = item.querySelector('span[style*="fef3c7"]');
+        if (smartBadge) {
+          smartBadge.textContent = '🧠 ' + matchLabel;
+          smartBadge.style.cssText = 'font-size:10px;padding:2px 8px;border-radius:8px;font-weight:600;background:#e8f5e9;color:#2e7d32;';
+        }
+        item.style.background = '#f0faf0';
+        item.onmouseover = function() { item.style.background = '#e8f5e9'; };
+        item.onmouseout = function() { item.style.background = '#f0faf0'; };
+        panel.appendChild(item);
+      });
+    }
+  }
 
   var footer = document.createElement('div');
   footer.style.cssText = 'padding:14px 18px;border-top:1px solid #f1f3f4;text-align:center;';
-  if (smartResults.length > 0) {
-    var notSatisfiedBtn = document.createElement('button');
-    notSatisfiedBtn.textContent = '🔎 Not satisfied? Show ' + smartResults.length + ' smart result' + (smartResults.length > 1 ? 's' : '') + ' (typos & similar topics)';
-    notSatisfiedBtn.style.cssText = 'padding:8px 18px;background:#f8f9fa;color:#1a73e8;border:1.5px solid #1a73e8;border-radius:20px;font-size:12px;cursor:pointer;font-weight:600;transition:background 0.15s;';
-    notSatisfiedBtn.onmouseover = function(){ notSatisfiedBtn.style.background='#e8f0fe'; };
-    notSatisfiedBtn.onmouseout  = function(){ notSatisfiedBtn.style.background='#f8f9fa'; };
-    notSatisfiedBtn.onclick = function() {
-      footer.remove();
-      var divider = document.createElement('div');
-      divider.style.cssText = 'padding:10px 18px 4px;background:#fef7e0;border-top:1px solid #fde68a;border-bottom:1px solid #fde68a;display:flex;align-items:center;gap:8px;';
-      divider.innerHTML = '<span style="font-size:13px;">🧠</span><span style="font-size:12px;font-weight:600;color:#b45309;">Smart results — fuzzy matches & similar topics</span>';
-      panel.appendChild(divider);
-      smartResults.forEach(function(r, i) {
-        panel.appendChild(buildResultItem(r, i, query, classId, panel, true));
-      });
-    };
-    footer.appendChild(notSatisfiedBtn);
-  } else {
-    footer.innerHTML = '<span style="font-size:11px;color:#9aa0a6;">✓ All possible matches shown</span>';
-  }
+  var engineInfo = exactResults.length + ' exact';
+  if (smartResults.length > 0) engineInfo += ' + ' + smartResults.length + ' smart (synonyms, stems, fuzzy)';
+  footer.innerHTML = '<span style="font-size:11px;color:#9aa0a6;">🧠 Semantic search: ' + engineInfo + ' | No API needed</span>';
   panel.appendChild(footer);
   document.body.appendChild(panel);
 }
@@ -457,10 +981,7 @@ function doDeepSearch(query) {
   if (!classId) { showToast('Open a class first'); return; }
 
   deepSearchInProgress = true;
-  var dsBtn = document.getElementById('gcn-deep-search-btn');
-  if (dsBtn) { dsBtn.textContent = '⏳ Scanning...'; dsBtn.disabled = true; }
-
-  showToast('🔐 Requesting permission to read files...');
+  showToast('📄 Deep searching inside PDFs...');
 
   try {
     chrome.runtime.sendMessage({
@@ -469,26 +990,18 @@ function doDeepSearch(query) {
       query: query.trim()
     }, function(res) {
       deepSearchInProgress = false;
-      if (dsBtn) { dsBtn.textContent = '📄 Deep Search'; dsBtn.disabled = false; }
 
       if (chrome.runtime.lastError) {
         showToast('❌ Error: ' + chrome.runtime.lastError.message);
         return;
       }
-      if (!res) {
-        showToast('❌ No response from background');
-        return;
-      }
-      if (res.error) {
-        showToast('❌ ' + res.error);
-        return;
-      }
+      if (!res) { showToast('❌ No response from background'); return; }
+      if (res.error) { showToast('❌ ' + res.error); return; }
 
       renderDeepSearchResults(query, classId, res);
     });
   } catch(e) {
     deepSearchInProgress = false;
-    if (dsBtn) { dsBtn.textContent = '📄 Deep Search'; dsBtn.disabled = false; }
     showToast('❌ ' + e.message);
   }
 }
@@ -498,7 +1011,6 @@ function renderDeepSearchResults(query, classId, response) {
   var totalFiles = response.totalFiles || 0;
   var debugLog = response.debug || [];
 
-  // Always log debug info to page console
   if (debugLog.length > 0) {
     console.log('%c[GC Deep Search Debug]', 'color:#6d28d9;font-weight:bold;');
     debugLog.forEach(function(line) { console.log('  ' + line); });
@@ -510,19 +1022,15 @@ function renderDeepSearchResults(query, classId, response) {
   panel.setAttribute('data-class-id', classId);
   panel.style.cssText = 'position:fixed;top:56px;left:50%;transform:translateX(-50%);width:620px;max-width:95vw;max-height:80vh;overflow-y:auto;background:#fff;border-radius:12px;box-shadow:0 4px 24px rgba(0,0,0,0.2);z-index:99999;font-family:sans-serif;';
 
-  // Info bar
   var info = document.createElement('div');
   info.style.cssText = 'background:#ede9fe;color:#6d28d9;font-size:11px;padding:6px 18px;border-bottom:1px solid #ddd6fe;display:flex;align-items:center;gap:8px;border-radius:12px 12px 0 0;';
   info.innerHTML = '<span style="font-size:14px;">📄</span> Deep Search — scanned <b>' + totalFiles + '</b> file(s) for "<b>' + query.replace(/</g,'&lt;') + '</b>"';
   panel.appendChild(info);
 
-  // Header
   var header = document.createElement('div');
   header.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:14px 18px;border-bottom:1px solid #f1f3f4;position:sticky;top:0;background:#fff;z-index:1;';
   var htitle = document.createElement('span');
-  htitle.textContent = results.length > 0
-    ? '📄 ' + results.length + ' match(es) found inside files'
-    : '📄 No matches found inside files';
+  htitle.textContent = results.length > 0 ? '📄 ' + results.length + ' match(es) found inside files' : '📄 No matches found inside files';
   htitle.style.cssText = 'font-size:14px;font-weight:600;color:#202124;';
   var closeBtn = document.createElement('button');
   closeBtn.textContent = '✕';
@@ -535,14 +1043,8 @@ function renderDeepSearchResults(query, classId, response) {
     var empty = document.createElement('div');
     empty.style.cssText = 'text-align:center;padding:40px 20px;color:#9aa0a6;font-size:13px;';
     empty.innerHTML = '<div style="font-size:36px;margin-bottom:10px">📄</div>' +
-      (response.message || 'No matches found.') + '<br>' +
+      'No matches found in ' + totalFiles + ' file(s).<br>' +
       '<span style="font-size:11px;color:#bdc1c6;">Searched PDFs, Docs, Slides attached to stream posts & assignments.</span>';
-    if (debugLog.length > 0) {
-      var debugEl = document.createElement('div');
-      debugEl.style.cssText = 'margin-top:12px;padding:8px;background:#f3f4f6;border-radius:6px;text-align:left;font-size:10px;color:#6b7280;font-family:monospace;max-height:160px;overflow-y:auto;word-break:break-all;';
-      debugEl.innerHTML = '<b>Debug log:</b><br>' + debugLog.map(function(l){ return l.replace(/</g,'&lt;'); }).join('<br>');
-      empty.appendChild(debugEl);
-    }
     panel.appendChild(empty);
   } else {
     results.forEach(function(r, i) {
@@ -551,7 +1053,6 @@ function renderDeepSearchResults(query, classId, response) {
       item.onmouseover = function() { item.style.background = '#f3e8ff'; };
       item.onmouseout  = function() { item.style.background = '#faf5ff'; };
 
-      // Top row: badges
       var topRow = document.createElement('div');
       topRow.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:6px;';
       var typeBadge = document.createElement('span');
@@ -564,39 +1065,36 @@ function renderDeepSearchResults(query, classId, response) {
       var num = document.createElement('span');
       num.textContent = '#' + (i + 1);
       num.style.cssText = 'font-size:11px;color:#bdc1c6;';
-      topRow.appendChild(typeBadge);
-      topRow.appendChild(deepBadge);
-      topRow.appendChild(num);
+      topRow.appendChild(typeBadge); topRow.appendChild(deepBadge); topRow.appendChild(num);
 
-      // File name
       var fileNameEl = document.createElement('div');
       fileNameEl.textContent = '📎 ' + r.fileName;
       fileNameEl.style.cssText = 'font-size:13px;font-weight:600;color:#202124;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
-      fileNameEl.title = r.fileName;
 
-      // Post title
       var postTitleEl = document.createElement('div');
       postTitleEl.textContent = 'From: ' + (r.postTitle || 'Unknown post');
       postTitleEl.style.cssText = 'font-size:11px;color:#9aa0a6;margin-bottom:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
 
-      // Snippet
       var snippetEl = document.createElement('div');
       snippetEl.style.cssText = 'font-size:12px;color:#5f6368;line-height:1.6;margin-bottom:8px;word-break:break-word;background:#fff;padding:8px 12px;border-radius:8px;border:1px solid #e9d5ff;';
       snippetEl.innerHTML = highlightDeepSnippet(r.snippet || '', query);
 
-      // Bottom row: date + buttons
       var bottomRow = document.createElement('div');
       bottomRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;';
-      var dt = document.createElement('span');
-      dt.textContent = r.postDate ? '🗓 ' + r.postDate : '';
-      dt.style.cssText = 'font-size:11px;color:#9aa0a6;';
+      var dtEl = document.createElement('span');
+      dtEl.textContent = r.postDate ? '🗓 ' + r.postDate : '';
+      dtEl.style.cssText = 'font-size:11px;color:#9aa0a6;';
       var btnGrp = document.createElement('div');
       btnGrp.style.cssText = 'display:flex;gap:6px;';
 
       var openFileBtn = document.createElement('button');
-      openFileBtn.textContent = '📄 Open File';
+      openFileBtn.textContent = '🔍 Open & Find';
       openFileBtn.style.cssText = 'font-size:11px;background:#ede9fe;color:#6d28d9;border:1px solid #6d28d9;padding:3px 12px;border-radius:8px;cursor:pointer;font-weight:600;';
-      openFileBtn.onclick = function(e) { e.stopPropagation(); window.open(r.fileUrl, '_blank'); };
+      openFileBtn.onclick = function(e) {
+        e.stopPropagation();
+        window.open('https://drive.google.com/file/d/' + r.fileId + '/view', '_blank');
+        showToast('📄 Use Ctrl+F in the PDF to find "' + query + '"');
+      };
 
       if (r.postUrl) {
         var goPostBtn = document.createElement('button');
@@ -606,24 +1104,18 @@ function renderDeepSearchResults(query, classId, response) {
         btnGrp.appendChild(goPostBtn);
       }
       btnGrp.appendChild(openFileBtn);
-      bottomRow.appendChild(dt);
-      bottomRow.appendChild(btnGrp);
+      bottomRow.appendChild(dtEl); bottomRow.appendChild(btnGrp);
 
-      item.appendChild(topRow);
-      item.appendChild(fileNameEl);
-      item.appendChild(postTitleEl);
-      item.appendChild(snippetEl);
-      item.appendChild(bottomRow);
+      item.appendChild(topRow); item.appendChild(fileNameEl); item.appendChild(postTitleEl);
+      item.appendChild(snippetEl); item.appendChild(bottomRow);
       panel.appendChild(item);
     });
   }
 
-  // Footer
   var footer = document.createElement('div');
   footer.style.cssText = 'padding:12px 18px;border-top:1px solid #f1f3f4;text-align:center;';
   footer.innerHTML = '<span style="font-size:11px;color:#9aa0a6;">Deep Search scanned ' + totalFiles + ' attached file(s) via Google Classroom & Drive APIs</span>';
   panel.appendChild(footer);
-
   document.body.appendChild(panel);
 }
 
@@ -637,6 +1129,8 @@ function highlightDeepSnippet(snippet, query) {
   });
   return safe;
 }
+
+// ─── DARK MODE — full page CSS invert (from new code) ─────────────────────────
 var gcnDark = false;
 
 function initDarkMode() {
@@ -651,29 +1145,19 @@ function applyDarkMode() {
   if (!s) { s = document.createElement('style'); s.id = 'gcn-dark-style'; document.head.appendChild(s); }
 
   s.textContent = gcnDark ? [
-    // ── Invert the entire page ─────────────────────────────────────────────────
     'html { filter: invert(1) hue-rotate(180deg) !important; background: #fff !important; }',
-
-    // ── Re-invert images & videos so photos look correct ──────────────────────
     'img, video, canvas, picture { filter: invert(1) hue-rotate(180deg) !important; }',
-
-    // ── Class card title text: invert turns them dark — force back to white ───
     '.YVvGBb, .vwNmF, .oUlnUb, .khuEhb, .ZG0g6, .lXf2hd, .yBSP2 { color: #fff !important; }',
-
-    // ── Re-invert extension UI panels (double-invert = back to normal colours) ─
     '#gcn-nav-group { filter: invert(1) hue-rotate(180deg) !important; }',
     '#gcn-bookmark-panel { filter: invert(1) hue-rotate(180deg) !important; }',
     '#gcn-api-results { filter: invert(1) hue-rotate(180deg) !important; }',
     '#gcn-toast { filter: invert(1) hue-rotate(180deg) !important; }',
-
-    // ── After re-invert, style extension buttons black ─────────────────────────
     '#gcn-dark-toggle { background:#111 !important; color:#fff !important; border:1px solid #444 !important; }',
     '#gcn-bm-nav-btn  { background:#111 !important; color:#fff !important; border:1px solid #444 !important; }',
     '#gcn-search-input { background:#111 !important; color:#fff !important; border:1px solid #444 !important; }',
     '#gcn-filter       { background:#111 !important; color:#fff !important; border:1px solid #444 !important; }',
     '#gcn-clear-btn    { background:#222 !important; color:#ccc !important; }',
     'button.gcn-bm-btn { background:#111 !important; color:#fff !important; border:1px solid #444 !important; }',
-    '#gcn-deep-search-btn { background:#2d1b69 !important; color:#c4b5fd !important; border:1px solid #6d28d9 !important; }',
   ].join('\n') : '';
 
   var toggle = document.getElementById('gcn-dark-toggle');
@@ -712,6 +1196,9 @@ function injectSearchBar() {
   }
   var bar = document.createElement('div'); bar.id='gcn-search-bar'; bar.style.cssText='display:flex;align-items:center;gap:6px;';
   var inp = document.createElement('input'); inp.type='text'; inp.id='gcn-search-input'; inp.placeholder='🔍 Search this class...';
+  inp.setAttribute('autocomplete', 'off');
+  inp.setAttribute('autocorrect', 'off');
+  inp.setAttribute('spellcheck', 'false');
   inp.style.cssText = 'width:180px;padding:5px 12px;border:none;border-radius:18px;font-size:13px;outline:none;background:rgba(0,0,0,0.08);color:#202124;transition:width 0.3s,background 0.3s;';
   inp.onfocus = function(){ inp.style.width='240px'; inp.style.background='#fff'; inp.style.boxShadow='0 1px 4px rgba(0,0,0,0.2)'; };
   inp.onblur  = function(){ if(!inp.value){ inp.style.width='180px'; inp.style.background='rgba(0,0,0,0.08)'; inp.style.boxShadow=''; } };
@@ -726,30 +1213,45 @@ function injectSearchBar() {
   var dbt=null;
   inp.oninput = function(){
     clr.style.display=inp.value?'inline-block':'none';
-    var q=inp.value.trim(); if(!q){var o=document.getElementById('gcn-api-results');if(o)o.remove();return;}
+    var q=inp.value.trim();
+    if(!q){var o=document.getElementById('gcn-api-results');if(o)o.remove();return;}
     clearTimeout(dbt); dbt=setTimeout(function(){doSearch(q,sel.value);},300);
   };
   sel.onchange = function(){ var q=inp.value.trim(); if(q)doSearch(q,sel.value); };
   inp.onkeydown = function(e){
-    if(e.key==='Enter'&&inp.value.trim()){clearTimeout(dbt);doSearch(inp.value.trim(),sel.value);}
+    if(e.key==='Enter'&&inp.value.trim()){
+      clearTimeout(dbt);
+      var q = inp.value.trim();
+      var toggle = document.getElementById('gcn-deep-search-toggle');
+      if (toggle && toggle.checked) { doDeepSearch(q); }
+      else { doSearch(q,sel.value); }
+    }
     if(e.key==='Escape'){var o=document.getElementById('gcn-api-results');if(o)o.remove();}
   };
   bar.appendChild(inp); bar.appendChild(sel); bar.appendChild(clr);
 
-  // Deep Search button
-  var dsBtn = document.createElement('button');
-  dsBtn.id = 'gcn-deep-search-btn';
-  dsBtn.textContent = '📄 Deep Search';
-  dsBtn.title = 'Search inside PDFs & attachments (requires permission)';
-  dsBtn.style.cssText = 'padding:5px 12px;background:#ede9fe;color:#6d28d9;border:1px solid #6d28d9;border-radius:18px;font-size:12px;cursor:pointer;font-weight:600;white-space:nowrap;transition:background 0.15s;';
-  dsBtn.onmouseover = function() { dsBtn.style.background = '#ddd6fe'; };
-  dsBtn.onmouseout  = function() { dsBtn.style.background = '#ede9fe'; };
-  dsBtn.onclick = function() {
-    var q = inp.value.trim();
-    if (!q) { showToast('Type a search query first'); inp.focus(); return; }
-    doDeepSearch(q);
+  // Deep Search toggle
+  var dsToggleWrap = document.createElement('label');
+  dsToggleWrap.id = 'gcn-deep-search-toggle-wrap';
+  dsToggleWrap.title = 'Deep Search — search inside PDFs';
+  dsToggleWrap.style.cssText = 'display:flex;align-items:center;cursor:pointer;user-select:none;flex-shrink:0;';
+  var dsToggle = document.createElement('input');
+  dsToggle.type = 'checkbox'; dsToggle.id = 'gcn-deep-search-toggle'; dsToggle.style.cssText = 'display:none;';
+  var dsSlider = document.createElement('span'); dsSlider.id = 'gcn-ds-slider';
+  dsSlider.style.cssText = 'width:28px;height:16px;background:#999;border-radius:8px;position:relative;display:inline-block;transition:background 0.2s;';
+  dsSlider.innerHTML = '<span style="position:absolute;top:2px;left:2px;width:12px;height:12px;background:#fff;border-radius:50%;transition:transform 0.2s;box-shadow:0 1px 2px rgba(0,0,0,0.3);"></span>';
+  dsToggle.onchange = function() {
+    var knob = dsSlider.querySelector('span');
+    if (dsToggle.checked) {
+      dsSlider.style.background = '#6d28d9'; knob.style.transform = 'translateX(12px)';
+      var q = inp.value.trim(); if (q) doDeepSearch(q);
+    } else {
+      dsSlider.style.background = '#999'; knob.style.transform = 'translateX(0)';
+      var q2 = inp.value.trim(); if (q2) doSearch(q2, sel.value);
+    }
   };
-  bar.appendChild(dsBtn);
+  dsToggleWrap.appendChild(dsToggle); dsToggleWrap.appendChild(dsSlider);
+  bar.appendChild(dsToggleWrap);
 
   var group=document.getElementById('gcn-nav-group');
   if(group){group.appendChild(bar);}else{document.body.appendChild(bar);}
@@ -984,9 +1486,33 @@ function main() {
     injectDarkToggle();
     if(!currentClassId)return;
     injectSearchBar(); injectBookmarkPanel(); injectStreamBookmarkButtons(); injectAssignmentBookmarkButtons();
-    if(!postStore[currentClassId]||!postStore[currentClassId].complete){
-      if(!postStore[currentClassId])postStore[currentClassId]={posts:[],complete:false};
-      startScroll(currentClassId);
+    // Passively collect visible DOM posts (no forced scrolling)
+    if(!postStore[currentClassId]) postStore[currentClassId]={posts:[],complete:false};
+    var visible = collectDomPosts(currentClassId);
+    if (visible.length > 0) {
+      // Merge with existing: keep old posts, add new visible ones
+      var existing = postStore[currentClassId].posts;
+      var seenTexts = {};
+      existing.forEach(function(p) {
+        var k = (p.text||'').substring(0,50).toLowerCase();
+        if (k.length > 10) seenTexts[k] = true;
+      });
+      visible.forEach(function(p) {
+        var k = (p.text||'').substring(0,50).toLowerCase();
+        if (k.length > 10 && !seenTexts[k]) {
+          existing.push(p);
+          seenTexts[k] = true;
+        } else if (k.length > 10 && seenTexts[k]) {
+          // Update element reference for existing post
+          for (var i = 0; i < existing.length; i++) {
+            if ((existing[i].text||'').substring(0,50).toLowerCase() === k && !existing[i].element && p.element) {
+              existing[i].element = p.element;
+              break;
+            }
+          }
+        }
+      });
+      postStore[currentClassId].posts = existing;
     }
   } catch(e){console.warn('[GCN]',e);}
 }
