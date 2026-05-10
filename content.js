@@ -406,7 +406,8 @@ function scorePost(post, query) {
   }
 
   // ── Signal 7: N-GRAM OVERLAP (catches partial word matches) ───────────
-  if (score === 0 && q.length >= 4) {
+  // Only for multi-word queries — single words are handled by fuzzy matching
+  if (score === 0 && q.length >= 4 && qWords.length > 1) {
     var qGrams = getNgrams(q, 3);
     var tGrams = getNgrams(text.substring(0, 500), 3);
     var overlap = 0;
@@ -471,14 +472,18 @@ function collectDomPosts(classId) {
     if (el.style.display==='none' || el.style.visibility==='hidden') return;
     var text = (el.innerText||'').trim();
     if (text.length < 10) return;
-    var bestUrl = null, hasForeignClass = false;
+    var bestUrl = null, specificUrl = null, hasForeignClass = false;
     el.querySelectorAll('a[href]').forEach(function(a) {
       if (!a.href) return;
-      if (a.href.includes(classMarker)) { if (!bestUrl) bestUrl = a.href; }
+      if (a.href.includes(classMarker)) {
+        if (!bestUrl) bestUrl = a.href;
+        // Prefer URLs with /p/ (specific post link) over generic class links
+        if (!specificUrl && a.href.includes('/p/')) specificUrl = a.href;
+      }
       else if (a.href.includes('/c/')) { hasForeignClass = true; }
     });
     if (hasForeignClass && !bestUrl) return;
-    var url = bestUrl || ('https://classroom.google.com' + classMarker);
+    var url = specificUrl || bestUrl || ('https://classroom.google.com' + classMarker);
     posts.push({ classId:classId, text:text, title:text.substring(0,80), url:fixUrl(url), type:'stream', element:el });
   });
   document.querySelectorAll('.cQMaT,.RNmOtb,.asQXV,.zR38ld').forEach(function(el) {
@@ -612,6 +617,17 @@ function doSearch(query, filter) {
       apiPosts.forEach(function(p) {
         var k = (p.text||'').substring(0,50).toLowerCase();
         if (k.length > 10 && !seenTexts[k]) { existing.push(p); seenTexts[k] = true; }
+        else if (k.length > 10 && seenTexts[k] && p.url && p.url.includes('/p/')) {
+          // API post has a specific post URL — upgrade the existing DOM post's URL
+          for (var ei = 0; ei < existing.length; ei++) {
+            var ek = (existing[ei].text||'').substring(0,50).toLowerCase();
+            if (ek === k && (!existing[ei].url || !existing[ei].url.includes('/p/'))) {
+              existing[ei].url = p.url;
+              if (p.date && !existing[ei].date) existing[ei].date = p.date;
+              break;
+            }
+          }
+        }
       });
       postStore[classId].posts = existing;
       postStore[classId].complete = true;
