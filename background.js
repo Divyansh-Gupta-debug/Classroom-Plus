@@ -695,7 +695,55 @@ function listAndMatchCourse(token, urlClassId, debugLog) {
 }
 
 // Run the actual deep search once we have the numeric course ID
+// Deep search matching function
+function deepSearchMatch(extractedText, query) {
+  if (!extractedText) return null;
+  var textLower = extractedText.toLowerCase();
+  var qLower = query.toLowerCase().trim();
+  if (!qLower) return null;
+
+  // Only match if the full phrase is found in the text
+  var matchIdx = textLower.indexOf(qLower);
+  if (matchIdx === -1) return null;
+
+  var snippetStart = Math.max(0, matchIdx - 100);
+  var snippetEnd = Math.min(extractedText.length, matchIdx + qLower.length + 200);
+  var snippet = (snippetStart > 0 ? '…' : '') + extractedText.substring(snippetStart, snippetEnd).trim() + (snippetEnd < extractedText.length ? '…' : '');
+  return { snippet: snippet, matchType: 'exact' };
+}
+
 function runDeepSearch(token, courseId, query, debugLog) {
+  var CACHE_VERSION = 'v3_';
+  var courseTextCacheKey = 'ds_coursetext_' + CACHE_VERSION + courseId;
+
+  // Check if we already have all file texts cached for this course
+  return new Promise(function(resolve) {
+    chrome.storage.local.get(courseTextCacheKey, function(cached) {
+      resolve(cached[courseTextCacheKey] || null);
+    });
+  }).then(function(cachedCourseData) {
+    // If we have cached data, search directly without any API calls
+    if (cachedCourseData && cachedCourseData.files && cachedCourseData.files.length > 0) {
+      debugLog.push('FULL CACHE HIT — ' + cachedCourseData.files.length + ' files cached, skipping API');
+      var deepResults = [];
+      cachedCourseData.files.forEach(function(ft) {
+        var matchResult = deepSearchMatch(ft.extractedText, query);
+        if (matchResult) {
+          deepResults.push({
+            fileName: ft.fileName, fileId: ft.fileId, postTitle: ft.postTitle,
+            postUrl: ft.postUrl, postDate: ft.postDate, postType: ft.postType,
+            snippet: matchResult.snippet, fileUrl: 'https://drive.google.com/file/d/' + ft.fileId + '/view'
+          });
+        }
+      });
+      return {
+        results: deepResults, totalFiles: cachedCourseData.files.length, debug: debugLog,
+        message: deepResults.length > 0 ? 'Found matches in ' + deepResults.length + ' file(s) out of ' + cachedCourseData.files.length + ' (cached).' : 'No matches in ' + cachedCourseData.files.length + ' cached file(s).'
+      };
+    }
+
+    // No cache — do full API fetch
+    debugLog.push('No course cache — fetching from API...');
   var announcementsP = fetchWithDebug(
     'https://classroom.googleapis.com/v1/courses/' + courseId + '/announcements?pageSize=100',
     token, 'announcements', debugLog, 'Announcements'
@@ -791,8 +839,9 @@ function runDeepSearch(token, courseId, query, debugLog) {
 
     // ── SPEED OPTIMIZATION: cache + batch process files in parallel groups of 5 ──
     var BATCH_SIZE = 5;
+    var CACHE_VERSION = 'v3_';
     var allFiles = fileTasks.slice();
-    var cacheKeys = allFiles.map(function(ft) { return 'dscache_' + ft.fileId; });
+    var cacheKeys = allFiles.map(function(ft) { return 'dscache_' + CACHE_VERSION + ft.fileId; });
 
     return new Promise(function(resolveCache) {
       chrome.storage.local.get(cacheKeys, function(cached) {
@@ -802,7 +851,7 @@ function runDeepSearch(token, courseId, query, debugLog) {
       // Apply cached text immediately
       var uncachedFiles = [];
       allFiles.forEach(function(ft) {
-        var cacheKey = 'dscache_' + ft.fileId;
+        var cacheKey = 'dscache_' + CACHE_VERSION + ft.fileId;
         if (cached[cacheKey]) {
           ft.extractedText = cached[cacheKey];
           debugLog.push('CACHED ' + ft.fileName + ' (' + ft.extractedText.length + ' chars)');
@@ -823,7 +872,7 @@ function runDeepSearch(token, courseId, query, debugLog) {
             debugLog.push('Extracted ' + ft.extractedText.length + ' chars from ' + ft.fileName);
             if (ft.extractedText.length > 0) {
               var obj = {};
-              obj['dscache_' + ft.fileId] = ft.extractedText;
+              obj['dscache_' + CACHE_VERSION + ft.fileId] = ft.extractedText;
               chrome.storage.local.set(obj);
             }
             return ft;
@@ -843,23 +892,8 @@ function runDeepSearch(token, courseId, query, debugLog) {
     }).then(function() {
       var deepResults = [];
       allFiles.forEach(function(ft) {
-        if (!ft.extractedText) return;
-        var textLower = ft.extractedText.toLowerCase();
-        var qWords = query.split(/\s+/).filter(function(w) { return w.length >= 2; });
-        var allMatch = qWords.length > 0 && qWords.every(function(qw) {
-          return textLower.indexOf(qw) !== -1;
-        });
-        var fullMatch = textLower.indexOf(query) !== -1;
-
-        if (allMatch || fullMatch) {
-          var matchIdx = textLower.indexOf(query);
-          if (matchIdx === -1) matchIdx = textLower.indexOf(qWords[0]);
-          var snippetStart = Math.max(0, matchIdx - 100);
-          var snippetEnd   = Math.min(ft.extractedText.length, matchIdx + query.length + 200);
-          var snippet = (snippetStart > 0 ? '…' : '') +
-                        ft.extractedText.substring(snippetStart, snippetEnd).trim() +
-                        (snippetEnd < ft.extractedText.length ? '…' : '');
-
+        var matchResult = deepSearchMatch(ft.extractedText, query);
+        if (matchResult) {
           deepResults.push({
             fileName: ft.fileName,
             fileId: ft.fileId,
@@ -867,11 +901,20 @@ function runDeepSearch(token, courseId, query, debugLog) {
             postUrl: ft.postUrl,
             postDate: ft.postDate,
             postType: ft.postType,
-            snippet: snippet,
+            snippet: matchResult.snippet,
             fileUrl: 'https://drive.google.com/file/d/' + ft.fileId + '/view'
           });
         }
       });
+
+      // Save full course text cache for instant repeat searches
+      var cacheData = { files: allFiles.map(function(ft) {
+        return { fileId: ft.fileId, fileName: ft.fileName, postTitle: ft.postTitle, postUrl: ft.postUrl, postDate: ft.postDate, postType: ft.postType, extractedText: ft.extractedText || '' };
+      }), cachedAt: Date.now() };
+      var cacheObj = {};
+      cacheObj[courseTextCacheKey] = cacheData;
+      chrome.storage.local.set(cacheObj);
+      debugLog.push('Course text cached (' + allFiles.length + ' files)');
 
       return {
         results: deepResults,
@@ -883,6 +926,7 @@ function runDeepSearch(token, courseId, query, debugLog) {
       };
     });
   });
+  }); // end of course cache check
 }
 
 // Fetch a single Classroom API endpoint with full error reporting
@@ -1085,11 +1129,29 @@ function extractFileText(token, fileId, mimeType, debugLog) {
           }
           debugLog.push('DOWNLOAD OK ' + (meta.name || fileId));
 
-          // For PDFs: extract text
+          // For PDFs: extract text, fall back to OCR if text is sparse
           if (actualMime === 'application/pdf') {
             return r.arrayBuffer().then(async function(buf) {
               debugLog.push('PDF buffer size: ' + buf.byteLength + ' bytes');
-              return await extractTextWithPdfJs(buf, debugLog);
+              var text = await extractTextWithPdfJs(buf, debugLog);
+              // If very little text extracted, try OCR (likely a scanned PDF)
+              if (text.trim().length < 200) {
+                debugLog.push('Sparse text (' + text.trim().length + ' chars) — trying OCR...');
+                var ocrText = await ocrViaGoogleDrive(token, fileId, debugLog);
+                if (ocrText.length > text.length) {
+                  debugLog.push('OCR extracted ' + ocrText.length + ' chars');
+                  return ocrText;
+                }
+              }
+              return text;
+            });
+          }
+
+          // For images: use OCR directly
+          if (actualMime.startsWith('image/')) {
+            debugLog.push('Image file — using OCR...');
+            return r.text().then(function() {
+              return ocrViaGoogleDrive(token, fileId, debugLog);
             });
           }
 
@@ -1106,6 +1168,59 @@ function extractFileText(token, fileId, mimeType, debugLog) {
         .then(function(t) { return (t || '').substring(0, 50000); });
     })
     .catch(function(e) { debugLog.push('EXTRACT ERR ' + fileId + ': ' + (e.message || e)); return ''; });
+}
+
+// ─── OCR via Google Drive: copy file as Google Doc with OCR, then export text ──
+async function ocrViaGoogleDrive(token, fileId, debugLog) {
+  try {
+    // Step 1: Copy the file as a Google Doc with OCR enabled
+    var copyUrl = 'https://www.googleapis.com/drive/v3/files/' + fileId + '/copy?ocrLanguage=en';
+    var copyRes = await fetch(copyUrl, {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        mimeType: 'application/vnd.google-apps.document',
+        name: 'OCR_temp_' + Date.now()
+      })
+    });
+
+    if (!copyRes.ok) {
+      debugLog.push('OCR copy failed: HTTP ' + copyRes.status);
+      return '';
+    }
+
+    var copyData = await copyRes.json();
+    var tempDocId = copyData.id;
+    debugLog.push('OCR doc created: ' + tempDocId);
+
+    // Step 2: Export the Google Doc as plain text
+    var exportUrl = 'https://www.googleapis.com/drive/v3/files/' + tempDocId + '/export?mimeType=text/plain';
+    var exportRes = await fetch(exportUrl, {
+      headers: { 'Authorization': 'Bearer ' + token }
+    });
+
+    var ocrText = '';
+    if (exportRes.ok) {
+      ocrText = await exportRes.text();
+      ocrText = (ocrText || '').substring(0, 50000);
+    } else {
+      debugLog.push('OCR export failed: HTTP ' + exportRes.status);
+    }
+
+    // Step 3: Delete the temp doc
+    fetch('https://www.googleapis.com/drive/v3/files/' + tempDocId, {
+      method: 'DELETE',
+      headers: { 'Authorization': 'Bearer ' + token }
+    }).catch(function() {}); // Fire and forget
+
+    return ocrText;
+  } catch(e) {
+    debugLog.push('OCR error: ' + (e.message || e));
+    return '';
+  }
 }
 
 // ─── Custom PDF Text Extractor using DecompressionStream API ───────────────
@@ -1229,13 +1344,25 @@ function extractTextFromContent(content) {
   var btBlocks = content.match(/BT[\s\S]*?ET/g) || [];
   for (var b = 0; b < btBlocks.length; b++) {
     var block = btBlocks[b];
+    var blockText = '';
     
     // Handle TJ operator: [(text) kerning (text) ...] TJ
     var tjArrays = block.match(/\[([^\]]*)\]\s*TJ/g) || [];
     for (var t = 0; t < tjArrays.length; t++) {
-      var parts = tjArrays[t].match(/\(([^)]*)\)/g) || [];
-      for (var p = 0; p < parts.length; p++) {
-        text += unescapePdfString(parts[p].substring(1, parts[p].length - 1));
+      var tjContent = tjArrays[t];
+      // Parse the TJ array — mix of (string) and numbers
+      var tjParts = tjContent.match(/\(([^)]*)\)|(-?\d+\.?\d*)/g) || [];
+      for (var p = 0; p < tjParts.length; p++) {
+        var part = tjParts[p];
+        if (part.charAt(0) === '(') {
+          blockText += unescapePdfString(part.substring(1, part.length - 1));
+        } else {
+          // Negative kerning > 100 usually means a word space
+          var kern = parseFloat(part);
+          if (kern < -100 || kern > 100) {
+            blockText += ' ';
+          }
+        }
       }
     }
     
@@ -1244,8 +1371,13 @@ function extractTextFromContent(content) {
     for (var ts = 0; ts < tjSingle.length; ts++) {
       var innerMatch = tjSingle[ts].match(/\(([^)]*)\)/);
       if (innerMatch) {
-        text += unescapePdfString(innerMatch[1]);
+        blockText += unescapePdfString(innerMatch[1]);
       }
+    }
+    
+    // Check for Td/TD positioning — large x-offset means space, Td with y-offset means newline
+    if (block.match(/\d+\s+\d+\s+Td/)) {
+      blockText += ' ';
     }
     
     // Handle ' and " operators (text with line break)
@@ -1253,11 +1385,11 @@ function extractTextFromContent(content) {
     for (var tq = 0; tq < tjQuote.length; tq++) {
       var qMatch = tjQuote[tq].match(/\(([^)]*)\)/);
       if (qMatch) {
-        text += unescapePdfString(qMatch[1]) + '\n';
+        blockText += unescapePdfString(qMatch[1]) + '\n';
       }
     }
     
-    text += ' ';
+    text += blockText + ' ';
   }
   
   // Method 2: If BT/ET got nothing, try raw parenthesized string extraction
@@ -1273,6 +1405,18 @@ function extractTextFromContent(content) {
     }
     if (rawText.length > text.length) text = rawText;
   }
+  
+  // Clean up the text
+  text = text
+    .replace(/\x00/g, '')                    // Remove null bytes
+    .replace(/[^\S\n]+/g, ' ')               // Collapse whitespace (keep newlines)
+    .replace(/ ?\n ?/g, '\n')                // Clean up around newlines
+    .replace(/\n{3,}/g, '\n\n')              // Max 2 newlines
+    .replace(/([a-z])([A-Z])/g, '$1 $2')     // Add space between camelCase words
+    .replace(/([.!?])([A-Z])/g, '$1 $2')     // Add space after sentence punctuation
+    .replace(/(\w)([\(\[])/g, '$1 $2')        // Add space before opening brackets
+    .replace(/([\)\]])(\w)/g, '$1 $2')        // Add space after closing brackets
+    .trim();
   
   return text;
 }

@@ -470,7 +470,10 @@ function collectDomPosts(classId) {
   var classMarker = '/c/' + classId;
   document.querySelectorAll('.n4xnA').forEach(function(el) {
     if (el.style.display==='none' || el.style.visibility==='hidden') return;
-    var text = (el.innerText||'').trim();
+    // Clone and remove injected buttons before reading text
+    var clone = el.cloneNode(true);
+    clone.querySelectorAll('.gcn-bm-btn').forEach(function(btn) { btn.remove(); });
+    var text = (clone.innerText||'').trim();
     if (text.length < 10) return;
     var bestUrl = null, specificUrl = null, hasForeignClass = false;
     el.querySelectorAll('a[href]').forEach(function(a) {
@@ -488,7 +491,9 @@ function collectDomPosts(classId) {
   });
   document.querySelectorAll('.cQMaT,.RNmOtb,.asQXV,.zR38ld').forEach(function(el) {
     if (el.style.display==='none') return;
-    var text = (el.innerText||'').trim();
+    var clone = el.cloneNode(true);
+    clone.querySelectorAll('.gcn-bm-btn').forEach(function(btn) { btn.remove(); });
+    var text = (clone.innerText||'').trim();
     if (text.length < 5) return;
     var a = el.querySelector('a[href]');
     if (a && a.href && a.href.includes('/c/') && !a.href.includes(classMarker)) return;
@@ -777,55 +782,60 @@ function getSnippet(text, query) {
 function buildResultItem(r, i, query, classId, panel, isSmartResult) {
   var item = document.createElement('div');
   item.className = 'gcn-result-item';
-  item.style.cssText = 'padding:12px 18px;border-bottom:1px solid #f1f3f4;background:' + (isSmartResult ? '#fffbeb' : '#fff') + ';';
-  item.onmouseover = function(){ item.style.background = isSmartResult ? '#fef3c7' : '#f8f9fa'; };
-  item.onmouseout  = function(){ item.style.background = isSmartResult ? '#fffbeb' : '#fff'; };
+  item.style.cssText = 'padding:14px 18px;border-bottom:1px solid #eee;background:#fff;transition:background 0.15s;';
+  item.onmouseover = function(){ item.style.background = isSmartResult ? '#f0fdf4' : '#f8fafc'; };
+  item.onmouseout  = function(){ item.style.background = '#fff'; };
 
   var topRow = document.createElement('div');
-  topRow.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:5px;';
+  topRow.style.cssText = 'display:flex;align-items:center;gap:6px;margin-bottom:6px;';
   var badge = document.createElement('span');
-  badge.textContent = r.type==='stream' ? '💬 Stream' : '📝 Classwork';
-  badge.style.cssText = 'font-size:10px;padding:2px 8px;border-radius:8px;font-weight:600;background:' +
-    (r.type==='stream' ? '#e8f0fe;color:#1a73e8;' : '#fef7e0;color:#f29900;');
+  badge.textContent = r.type==='stream' ? '💬 Stream' : '📋 Classwork';
+  badge.style.cssText = 'font-size:10px;padding:3px 10px;border-radius:12px;font-weight:600;' +
+    (r.type==='stream' ? 'background:#e0f2fe;color:#0369a1;' : 'background:#fef3c7;color:#b45309;');
   topRow.appendChild(badge);
   if (isSmartResult) {
     var smartBadge = document.createElement('span');
     smartBadge.textContent = '🧠 smart';
-    smartBadge.style.cssText = 'font-size:10px;padding:2px 8px;border-radius:8px;font-weight:600;background:#fef3c7;color:#b45309;';
+    smartBadge.style.cssText = 'font-size:10px;padding:3px 10px;border-radius:12px;font-weight:600;background:#ecfdf5;color:#047857;';
     topRow.appendChild(smartBadge);
   }
   var num = document.createElement('span');
   num.textContent = '#' + (i + 1);
-  num.style.cssText = 'font-size:11px;color:#bdc1c6;';
+  num.style.cssText = 'font-size:10px;color:#cbd5e1;margin-left:auto;';
   topRow.appendChild(num);
 
   var titleEl = document.createElement('div');
   titleEl.textContent = (r.title||r.text||'').substring(0,120);
-  titleEl.style.cssText = 'font-size:13px;font-weight:600;color:#202124;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:4px;';
+  titleEl.style.cssText = 'font-size:13px;font-weight:700;color:#1e293b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:5px;line-height:1.4;';
   titleEl.title = r.title||r.text||'';
 
   var snippetEl = document.createElement('div');
-  snippetEl.style.cssText = 'font-size:12px;color:#5f6368;line-height:1.5;margin-bottom:7px;word-break:break-word;';
+  snippetEl.style.cssText = 'font-size:12px;color:#64748b;line-height:1.6;margin-bottom:10px;word-break:break-word;';
   snippetEl.innerHTML = getSnippet(r.text || '', query);
 
   var bottomRow = document.createElement('div');
   bottomRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;';
   var dt = document.createElement('span');
-  dt.textContent = r.date ? '🗓 ' + r.date : '';
-  dt.style.cssText = 'font-size:11px;color:#9aa0a6;';
+  dt.textContent = r.date ? '📅 ' + r.date : '';
+  dt.style.cssText = 'font-size:11px;color:#94a3b8;';
   var grp = document.createElement('div');
-  grp.style.cssText = 'display:flex;gap:6px;';
+  grp.style.cssText = 'display:flex;gap:8px;';
   var bmBtn = document.createElement('button');
-  bmBtn.textContent = '🔖 Save';
-  bmBtn.style.cssText = 'font-size:11px;background:#e8f0fe;color:#1a73e8;border:1px solid #1a73e8;padding:3px 10px;border-radius:8px;cursor:pointer;font-weight:600;';
+  bmBtn.innerHTML = '📌 Save';
+  bmBtn.style.cssText = 'font-size:11px;background:#f1f5f9;color:#475569;border:1px solid #e2e8f0;padding:5px 14px;border-radius:20px;cursor:pointer;font-weight:600;transition:all 0.15s;';
+  bmBtn.onmouseover = function(){ bmBtn.style.background='#e2e8f0'; };
+  bmBtn.onmouseout = function(){ bmBtn.style.background='#f1f5f9'; };
   bmBtn.onclick = function(e) {
     e.stopPropagation();
     saveBookmark({id:makeId(),classId:classId,title:(r.title||r.text||'').substring(0,80),url:r.url,type:r.type,date:r.date||new Date().toLocaleDateString()});
-    bmBtn.textContent='✅ Saved'; setTimeout(function(){ bmBtn.textContent='🔖 Save'; }, 2000);
+    bmBtn.innerHTML='✅ Saved'; bmBtn.style.background='#ecfdf5'; bmBtn.style.color='#047857'; bmBtn.style.borderColor='#a7f3d0';
+    setTimeout(function(){ bmBtn.innerHTML='📌 Save'; bmBtn.style.background='#f1f5f9'; bmBtn.style.color='#475569'; bmBtn.style.borderColor='#e2e8f0'; }, 2000);
   };
   var goBtn = document.createElement('button');
-  goBtn.textContent = '↗ Go to post';
-  goBtn.style.cssText = 'font-size:11px;color:#fff;background:#1a73e8;border:none;padding:3px 12px;border-radius:8px;cursor:pointer;font-weight:600;';
+  goBtn.innerHTML = '↗ Go to post';
+  goBtn.style.cssText = 'font-size:11px;color:#fff;background:#2563eb;border:none;padding:5px 14px;border-radius:20px;cursor:pointer;font-weight:600;transition:all 0.15s;';
+  goBtn.onmouseover = function(){ goBtn.style.background='#1d4ed8'; };
+  goBtn.onmouseout = function(){ goBtn.style.background='#2563eb'; };
   goBtn.onclick = function(e) {
     e.stopPropagation(); panel.remove();
     window.open(fixUrl(r.url), '_blank');
@@ -980,7 +990,45 @@ function doDeepSearch(query) {
   if (!classId) { showToast('Open a class first'); return; }
 
   deepSearchInProgress = true;
-  showToast('📄 Deep searching inside PDFs...');
+
+  // Show live progress panel
+  var old = document.getElementById('gcn-api-results'); if (old) old.remove();
+  var progressPanel = document.createElement('div');
+  progressPanel.id = 'gcn-api-results';
+  progressPanel.setAttribute('data-class-id', classId);
+  progressPanel.style.cssText = 'position:fixed;top:56px;left:50%;transform:translateX(-50%);width:420px;max-width:90vw;background:#fff;border-radius:16px;box-shadow:0 4px 24px rgba(0,0,0,0.15);z-index:99999;font-family:sans-serif;overflow:hidden;';
+
+  var progressHeader = document.createElement('div');
+  progressHeader.style.cssText = 'background:linear-gradient(135deg,#7c3aed,#6d28d9);color:#fff;padding:16px 20px;display:flex;align-items:center;gap:10px;';
+  progressHeader.innerHTML = '<div style="width:20px;height:20px;border:2.5px solid rgba(255,255,255,0.3);border-top-color:#fff;border-radius:50%;animation:gcn-spin 0.6s linear infinite;"></div><span style="font-size:14px;font-weight:600;">Deep Search in progress...</span>';
+  progressPanel.appendChild(progressHeader);
+
+  var progressBody = document.createElement('div');
+  progressBody.style.cssText = 'padding:20px;text-align:center;';
+  var timerEl = document.createElement('div');
+  timerEl.style.cssText = 'font-size:28px;font-weight:700;color:#7c3aed;margin-bottom:8px;font-variant-numeric:tabular-nums;';
+  timerEl.textContent = '0s';
+  var statusEl = document.createElement('div');
+  statusEl.style.cssText = 'font-size:12px;color:#94a3b8;';
+  statusEl.textContent = 'Scanning files for "' + query + '"...';
+  var tipEl = document.createElement('div');
+  tipEl.style.cssText = 'font-size:11px;color:#cbd5e1;margin-top:12px;';
+  tipEl.textContent = '💡 Results are cached — next search will be instant';
+  progressBody.appendChild(timerEl);
+  progressBody.appendChild(statusEl);
+  progressBody.appendChild(tipEl);
+  progressPanel.appendChild(progressBody);
+  document.body.appendChild(progressPanel);
+
+  var startTime = Date.now();
+  var timerInterval = setInterval(function() {
+    var elapsed = Math.floor((Date.now() - startTime) / 1000);
+    timerEl.textContent = elapsed + 's';
+    if (elapsed < 5) statusEl.textContent = 'Fetching class posts...';
+    else if (elapsed < 15) statusEl.textContent = 'Downloading & scanning files...';
+    else if (elapsed < 30) statusEl.textContent = 'Extracting text from PDFs...';
+    else statusEl.textContent = 'Almost done, processing large files...';
+  }, 1000);
 
   try {
     chrome.runtime.sendMessage({
@@ -988,19 +1036,24 @@ function doDeepSearch(query) {
       classId: classId,
       query: query.trim()
     }, function(res) {
+      clearInterval(timerInterval);
       deepSearchInProgress = false;
 
       if (chrome.runtime.lastError) {
+        progressPanel.remove();
         showToast('❌ Error: ' + chrome.runtime.lastError.message);
         return;
       }
-      if (!res) { showToast('❌ No response from background'); return; }
-      if (res.error) { showToast('❌ ' + res.error); return; }
+      if (!res) { progressPanel.remove(); showToast('❌ No response from background'); return; }
+      if (res.error) { progressPanel.remove(); showToast('❌ ' + res.error); return; }
 
+      progressPanel.remove();
       renderDeepSearchResults(query, classId, res);
     });
   } catch(e) {
+    clearInterval(timerInterval);
     deepSearchInProgress = false;
+    progressPanel.remove();
     showToast('❌ ' + e.message);
   }
 }
@@ -1048,47 +1101,49 @@ function renderDeepSearchResults(query, classId, response) {
   } else {
     results.forEach(function(r, i) {
       var item = document.createElement('div');
-      item.style.cssText = 'padding:14px 18px;border-bottom:1px solid #f1f3f4;background:#faf5ff;transition:background 0.15s;';
-      item.onmouseover = function() { item.style.background = '#f3e8ff'; };
-      item.onmouseout  = function() { item.style.background = '#faf5ff'; };
+      item.style.cssText = 'padding:14px 18px;border-bottom:1px solid #eee;background:#fff;transition:background 0.15s;';
+      item.onmouseover = function() { item.style.background = '#faf5ff'; };
+      item.onmouseout  = function() { item.style.background = '#fff'; };
 
       var topRow = document.createElement('div');
-      topRow.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:6px;';
+      topRow.style.cssText = 'display:flex;align-items:center;gap:6px;margin-bottom:6px;';
       var typeBadge = document.createElement('span');
-      typeBadge.textContent = r.postType === 'stream' ? '💬 Stream' : r.postType === 'material' ? '📚 Material' : '📝 Classwork';
-      typeBadge.style.cssText = 'font-size:10px;padding:2px 8px;border-radius:8px;font-weight:600;' +
-        (r.postType === 'stream' ? 'background:#e8f0fe;color:#1a73e8;' : r.postType === 'material' ? 'background:#e8f5e9;color:#2e7d32;' : 'background:#fef7e0;color:#f29900;');
+      typeBadge.textContent = r.postType === 'stream' ? '💬 Stream' : r.postType === 'material' ? '📚 Material' : '📋 Classwork';
+      typeBadge.style.cssText = 'font-size:10px;padding:3px 10px;border-radius:12px;font-weight:600;' +
+        (r.postType === 'stream' ? 'background:#e0f2fe;color:#0369a1;' : r.postType === 'material' ? 'background:#ecfdf5;color:#047857;' : 'background:#fef3c7;color:#b45309;');
       var deepBadge = document.createElement('span');
       deepBadge.textContent = '📄 PDF match';
-      deepBadge.style.cssText = 'font-size:10px;padding:2px 8px;border-radius:8px;font-weight:600;background:#ede9fe;color:#6d28d9;';
+      deepBadge.style.cssText = 'font-size:10px;padding:3px 10px;border-radius:12px;font-weight:600;background:#f3e8ff;color:#7c3aed;';
       var num = document.createElement('span');
       num.textContent = '#' + (i + 1);
-      num.style.cssText = 'font-size:11px;color:#bdc1c6;';
+      num.style.cssText = 'font-size:10px;color:#cbd5e1;margin-left:auto;';
       topRow.appendChild(typeBadge); topRow.appendChild(deepBadge); topRow.appendChild(num);
 
       var fileNameEl = document.createElement('div');
       fileNameEl.textContent = '📎 ' + r.fileName;
-      fileNameEl.style.cssText = 'font-size:13px;font-weight:600;color:#202124;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+      fileNameEl.style.cssText = 'font-size:13px;font-weight:700;color:#1e293b;margin-bottom:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
 
       var postTitleEl = document.createElement('div');
       postTitleEl.textContent = 'From: ' + (r.postTitle || 'Unknown post');
-      postTitleEl.style.cssText = 'font-size:11px;color:#9aa0a6;margin-bottom:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+      postTitleEl.style.cssText = 'font-size:11px;color:#94a3b8;margin-bottom:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
 
       var snippetEl = document.createElement('div');
-      snippetEl.style.cssText = 'font-size:12px;color:#5f6368;line-height:1.6;margin-bottom:8px;word-break:break-word;background:#fff;padding:8px 12px;border-radius:8px;border:1px solid #e9d5ff;';
+      snippetEl.style.cssText = 'font-size:12px;color:#475569;line-height:1.6;margin-bottom:10px;word-break:break-word;background:#faf5ff;padding:10px 14px;border-radius:10px;border:1px solid #e9d5ff;';
       snippetEl.innerHTML = highlightDeepSnippet(r.snippet || '', query);
 
       var bottomRow = document.createElement('div');
       bottomRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;';
       var dtEl = document.createElement('span');
-      dtEl.textContent = r.postDate ? '🗓 ' + r.postDate : '';
-      dtEl.style.cssText = 'font-size:11px;color:#9aa0a6;';
+      dtEl.textContent = r.postDate ? '📅 ' + r.postDate : '';
+      dtEl.style.cssText = 'font-size:11px;color:#94a3b8;';
       var btnGrp = document.createElement('div');
-      btnGrp.style.cssText = 'display:flex;gap:6px;';
+      btnGrp.style.cssText = 'display:flex;gap:8px;';
 
       var openFileBtn = document.createElement('button');
       openFileBtn.textContent = '🔍 Open & Find';
-      openFileBtn.style.cssText = 'font-size:11px;background:#ede9fe;color:#6d28d9;border:1px solid #6d28d9;padding:3px 12px;border-radius:8px;cursor:pointer;font-weight:600;';
+      openFileBtn.style.cssText = 'font-size:11px;background:#f3e8ff;color:#7c3aed;border:1px solid #e9d5ff;padding:5px 14px;border-radius:20px;cursor:pointer;font-weight:600;transition:all 0.15s;';
+      openFileBtn.onmouseover = function(){ openFileBtn.style.background='#e9d5ff'; };
+      openFileBtn.onmouseout = function(){ openFileBtn.style.background='#f3e8ff'; };
       openFileBtn.onclick = function(e) {
         e.stopPropagation();
         window.open('https://drive.google.com/file/d/' + r.fileId + '/view', '_blank');
@@ -1098,7 +1153,9 @@ function renderDeepSearchResults(query, classId, response) {
       if (r.postUrl) {
         var goPostBtn = document.createElement('button');
         goPostBtn.textContent = '↗ Go to post';
-        goPostBtn.style.cssText = 'font-size:11px;color:#fff;background:#1a73e8;border:none;padding:3px 12px;border-radius:8px;cursor:pointer;font-weight:600;';
+        goPostBtn.style.cssText = 'font-size:11px;color:#fff;background:#2563eb;border:none;padding:5px 14px;border-radius:20px;cursor:pointer;font-weight:600;transition:all 0.15s;';
+        goPostBtn.onmouseover = function(){ goPostBtn.style.background='#1d4ed8'; };
+        goPostBtn.onmouseout = function(){ goPostBtn.style.background='#2563eb'; };
         goPostBtn.onclick = function(e) { e.stopPropagation(); window.open(fixUrl(r.postUrl), '_blank'); };
         btnGrp.appendChild(goPostBtn);
       }
@@ -1120,7 +1177,17 @@ function renderDeepSearchResults(query, classId, response) {
 
 function highlightDeepSnippet(snippet, query) {
   if (!snippet) return '';
-  var safe = snippet.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  // Clean up raw PDF text for display
+  var cleaned = snippet
+    .replace(/\x00/g, '')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')       // camelCase → camel Case
+    .replace(/([.!?,:;])([A-Za-z])/g, '$1 $2')  // punctuation spacing
+    .replace(/(\w)([\(\[])/g, '$1 $2')           // space before brackets
+    .replace(/([\)\]])(\w)/g, '$1 $2')           // space after brackets
+    .replace(/[^\S\n]+/g, ' ')                   // collapse whitespace
+    .replace(/\n{2,}/g, '\n')
+    .trim();
+  var safe = cleaned.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   var words = query.toLowerCase().trim().split(/\s+/).filter(function(w){ return w.length >= 2; });
   words.forEach(function(w) {
     var re = new RegExp('(' + w.replace(/[.*+?^${}()|[\]\\]/g,'\\$&') + ')', 'gi');
@@ -1220,8 +1287,8 @@ function injectSearchBar() {
     if(!q){var o=document.getElementById('gcn-api-results');if(o)o.remove();return;}
     clearTimeout(dbt); dbt=setTimeout(function(){
       var toggle = document.getElementById('gcn-deep-search-toggle');
-      if (toggle && toggle.checked) { doDeepSearch(q); }
-      else { doSearch(q,sel.value); }
+      // Deep search only triggers on Enter — don't auto-trigger while typing
+      if (!toggle || !toggle.checked) { doSearch(q,sel.value); }
     },300);
   };
   sel.onchange = function(){ var q=inp.value.trim(); if(q)doSearch(q,sel.value); };
@@ -1275,19 +1342,19 @@ function injectStreamBookmarkButtons() {
     if(!url)post.querySelectorAll('a[href]').forEach(function(a){ if(!url&&a.href&&a.href.includes('/c/'))url=a.href; });
     if(!url)url=window.location.href;
     url=fixUrl(url);
-    var btn=document.createElement('button'); btn.className='gcn-bm-btn'; btn.textContent='🔖 Bookmark';
-    btn.style.cssText='display:inline-block;margin-top:10px;margin-left:4px;padding:5px 14px;background:#e8f0fe;color:#1a73e8;border:1px solid #1a73e8;border-radius:14px;font-size:12px;cursor:pointer;font-weight:600;';
+    var btn=document.createElement('button'); btn.className='gcn-bm-btn'; btn.textContent='📌 Bookmark';
+    btn.style.cssText='display:inline-flex;align-items:center;gap:4px;margin-top:10px;margin-left:4px;padding:5px 16px;background:#f1f5f9;color:#475569;border:1px solid #e2e8f0;border-radius:20px;font-size:12px;cursor:pointer;font-weight:600;transition:all 0.15s;';
     btn.setAttribute('data-bookmarked','false');
     btn.onclick=function(e){
       e.stopPropagation();
       if(btn.getAttribute('data-bookmarked')==='true'){
         deleteBookmark(btn.getAttribute('data-bm-id')); btn.setAttribute('data-bookmarked','false'); btn.removeAttribute('data-bm-id');
-        btn.textContent='🔖 Bookmark'; btn.style.background='#e8f0fe'; btn.style.color='#1a73e8'; btn.style.borderColor='#1a73e8'; return;
+        btn.textContent='📌 Bookmark'; btn.style.background='#f1f5f9'; btn.style.color='#475569'; btn.style.borderColor='#e2e8f0'; return;
       }
       var id=makeId();
       saveBookmark({id:id,classId:classId,title:text.substring(0,80)+(text.length>80?'...':''),fullText:text.substring(0,300),url:url,type:'stream',date:new Date().toLocaleDateString()});
       btn.setAttribute('data-bookmarked','true'); btn.setAttribute('data-bm-id',id);
-      btn.textContent='✅ Bookmarked'; btn.style.background='#e6f4ea'; btn.style.color='#34a853'; btn.style.borderColor='#34a853';
+      btn.textContent='✅ Bookmarked'; btn.style.background='#ecfdf5'; btn.style.color='#047857'; btn.style.borderColor='#a7f3d0';
     };
     var inner=post.querySelector('.JZicYb')||post.querySelector('.gmNu1d')||post; inner.appendChild(btn);
   });
@@ -1356,7 +1423,7 @@ function openBookmarkDropdown(classId,anchorBtn) {
   var panel=document.createElement('div'); panel.id='gcn-bookmark-panel'; panel.setAttribute('data-class-id',classId);
   panel.style.cssText='position:fixed;top:58px;right:16px;width:340px;max-height:480px;display:flex;flex-direction:column;background:#fff;border:1px solid #dadce0;border-radius:16px;box-shadow:0 8px 32px rgba(0,0,0,0.18);z-index:99998;font-family:"Google Sans",Roboto,Arial,sans-serif;overflow:hidden;animation:gcn-dropdown 0.18s ease;';
   var hdr=document.createElement('div'); hdr.style.cssText='display:flex;align-items:center;justify-content:space-between;padding:14px 16px 10px;border-bottom:1px solid #f1f3f4;flex-shrink:0;';
-  var htitle=document.createElement('span'); htitle.style.cssText='font-size:15px;font-weight:700;color:#202124;'; htitle.textContent='🔖 My Bookmarks';
+  var htitle=document.createElement('span'); htitle.style.cssText='font-size:15px;font-weight:700;color:#1e293b;'; htitle.textContent='📌 My Bookmarks';
   var bdg=document.createElement('span'); bdg.id='gcn-count-badge'; bdg.style.cssText='background:#1a73e8;color:#fff;border-radius:10px;font-size:11px;padding:2px 9px;font-weight:700;margin-left:8px;'; bdg.textContent='0';
   var closeX=document.createElement('button'); closeX.textContent='✕'; closeX.style.cssText='background:none;border:none;font-size:16px;color:#9aa0a6;cursor:pointer;padding:2px 6px;margin-left:auto;border-radius:50%;';
   closeX.onclick=function(){panel.remove();anchorBtn.style.background='#f1f3f4';};
