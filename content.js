@@ -1146,7 +1146,11 @@ function applyDarkMode() {
   s.textContent = gcnDark ? [
     'html { filter: invert(1) hue-rotate(180deg) !important; background: #fff !important; }',
     'img, video, canvas, picture { filter: invert(1) hue-rotate(180deg) !important; }',
-    '.YVvGBb, .vwNmF, .oUlnUb, .khuEhb, .ZG0g6, .lXf2hd, .yBSP2 { color: #fff !important; }',
+    // Sidebar class names — use #000 because invert(1) flips it to #fff (white)
+    '.YVvGBb, .GRvzhf, .DWJNgb, .vwNmF, .oUlnUb, .khuEhb, .ZG0g6, .lXf2hd, .yBSP2 { color: #000 !important; }',
+    // Sidebar links and menu items
+    '.uTwgne, [role="menuitem"], [role="navigation"] span, [role="navigation"] div { color: #000 !important; }',
+    // Extension UI — these have their own invert filter so they need normal colors
     '#gcn-nav-group { filter: invert(1) hue-rotate(180deg) !important; }',
     '#gcn-bookmark-panel { filter: invert(1) hue-rotate(180deg) !important; }',
     '#gcn-api-results { filter: invert(1) hue-rotate(180deg) !important; }',
@@ -1214,7 +1218,11 @@ function injectSearchBar() {
     clr.style.display=inp.value?'inline-block':'none';
     var q=inp.value.trim();
     if(!q){var o=document.getElementById('gcn-api-results');if(o)o.remove();return;}
-    clearTimeout(dbt); dbt=setTimeout(function(){doSearch(q,sel.value);},300);
+    clearTimeout(dbt); dbt=setTimeout(function(){
+      var toggle = document.getElementById('gcn-deep-search-toggle');
+      if (toggle && toggle.checked) { doDeepSearch(q); }
+      else { doSearch(q,sel.value); }
+    },300);
   };
   sel.onchange = function(){ var q=inp.value.trim(); if(q)doSearch(q,sel.value); };
   inp.onkeydown = function(e){

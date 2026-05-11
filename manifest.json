@@ -2,6 +2,10 @@
   "manifest_version": 3,
   "name": "GC AI Bookmark & Search",
   "version": "1.2",
+  "description": "Search, bookmark, and navigate Google Classroom posts with AI-powered smart search, deep PDF search, and more.",
+  "icons": {
+    "128": "gc.png"
+  },
   "permissions": ["identity", "storage", "unlimitedStorage", "alarms"],
   "host_permissions": [
     "https://classroom.google.com/*",
@@ -22,6 +26,7 @@
   ],
   "action": {
     "default_popup": "popup.html",
+    "default_icon": "gc.png",
     "default_title": "GC AI Bookmark & Search"
   },
   "oauth2": {

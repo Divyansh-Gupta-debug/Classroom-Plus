@@ -546,7 +546,7 @@ chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
     if (!fpClassId) { sendResponse({ error: 'Missing classId' }); return true; }
 
     chrome.identity.getAuthToken({ interactive: false }, function(token) {
-      if (!token) { sendResponse({ announcements: [], coursework: [], materials: [] }); return; }
+      if (chrome.runtime.lastError || !token) { sendResponse({ announcements: [], coursework: [], materials: [] }); return; }
 
       resolveNumericCourseId(token, fpClassId, []).then(function(numericId) {
         return Promise.all([
@@ -789,22 +789,60 @@ function runDeepSearch(token, courseId, query, debugLog) {
       };
     }
 
-    // Extract text from each file — only process first 5 to show debug, then rest
-    var extractPromises = fileTasks.map(function(ft) {
-      return extractFileText(token, ft.fileId, ft.mimeType, debugLog).then(function(text) {
-        ft.extractedText = text || '';
-        debugLog.push('Extracted ' + ft.extractedText.length + ' chars from ' + ft.fileName);
-        return ft;
-      }).catch(function(e) {
-        ft.extractedText = '';
-        debugLog.push('FAILED to extract from ' + ft.fileName + ': ' + (e.message || e));
-        return ft;
-      });
-    });
+    // ── SPEED OPTIMIZATION: cache + batch process files in parallel groups of 5 ──
+    var BATCH_SIZE = 5;
+    var allFiles = fileTasks.slice();
+    var cacheKeys = allFiles.map(function(ft) { return 'dscache_' + ft.fileId; });
 
-    return Promise.all(extractPromises).then(function(filesWithText) {
+    return new Promise(function(resolveCache) {
+      chrome.storage.local.get(cacheKeys, function(cached) {
+        resolveCache(cached || {});
+      });
+    }).then(function(cached) {
+      // Apply cached text immediately
+      var uncachedFiles = [];
+      allFiles.forEach(function(ft) {
+        var cacheKey = 'dscache_' + ft.fileId;
+        if (cached[cacheKey]) {
+          ft.extractedText = cached[cacheKey];
+          debugLog.push('CACHED ' + ft.fileName + ' (' + ft.extractedText.length + ' chars)');
+        } else {
+          uncachedFiles.push(ft);
+        }
+      });
+
+      debugLog.push(allFiles.length - uncachedFiles.length + ' files from cache, ' + uncachedFiles.length + ' to download');
+
+      // Process uncached files in batches of 5
+      function processBatch(startIdx) {
+        var batch = uncachedFiles.slice(startIdx, startIdx + BATCH_SIZE);
+        if (batch.length === 0) return Promise.resolve();
+        return Promise.all(batch.map(function(ft) {
+          return extractFileText(token, ft.fileId, ft.mimeType, debugLog).then(function(text) {
+            ft.extractedText = text || '';
+            debugLog.push('Extracted ' + ft.extractedText.length + ' chars from ' + ft.fileName);
+            if (ft.extractedText.length > 0) {
+              var obj = {};
+              obj['dscache_' + ft.fileId] = ft.extractedText;
+              chrome.storage.local.set(obj);
+            }
+            return ft;
+          }).catch(function(e) {
+            ft.extractedText = '';
+            debugLog.push('FAILED to extract from ' + ft.fileName + ': ' + (e.message || e));
+            return ft;
+          });
+        })).then(function() {
+          if (startIdx + BATCH_SIZE < uncachedFiles.length) {
+            return processBatch(startIdx + BATCH_SIZE);
+          }
+        });
+      }
+
+      return processBatch(0);
+    }).then(function() {
       var deepResults = [];
-      filesWithText.forEach(function(ft) {
+      allFiles.forEach(function(ft) {
         if (!ft.extractedText) return;
         var textLower = ft.extractedText.toLowerCase();
         var qWords = query.split(/\s+/).filter(function(w) { return w.length >= 2; });
